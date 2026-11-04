@@ -73,40 +73,7 @@ fun PageHeader(title: String, subtitle: String = "") {
     }
 }
 
-// ------------------------------------------------------------------ 设置
-
-@Composable
-fun SettingsScreen(snackbar: SnackbarHostState, reopenGuide: () -> Unit) {
-    val ctx = LocalContext.current
-    val c = X.colors
-    val scope = rememberCoroutineScope()
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(Dimens.pad),
-        verticalArrangement = Arrangement.spacedBy(Dimens.gap)) {
-        PageHeader("设置", "账号、答题来源、推送和界面")
-        XCard(Modifier.fillMaxWidth(), title = "账号与运行", subtitle = "学习通账号和基本参数", appearDelay = 0) {
-            BasicFields()
-        }
-        SettingsModel.groups().forEachIndexed { i, g -> SettingsGroupCard(g, appearDelay = 60 * (i + 1)) }
-        XCard(Modifier.fillMaxWidth(), title = "界面", subtitle = "与电脑版相同的外观选项", appearDelay = 240) {
-            Text("主题", color = c.text, fontSize = 14.sp)
-            Segmented(listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色"), UiPrefs.theme,
-                { UiPrefs.theme = it; UiPrefs.save(ctx) }, Modifier.fillMaxWidth())
-            SwitchRow("界面动画", "关闭后所有过渡立即完成", UiPrefs.motion) { UiPrefs.motion = it; UiPrefs.save(ctx) }
-        }
-        XButton("保存", {
-            scope.launch {
-                SettingsModel.save(ctx)
-                val problem = SettingsModel.problem(ctx)
-                snackbar.showSnackbar(if (problem.isEmpty()) "已保存" else "已保存。$problem")
-            }
-        }, Modifier.fillMaxWidth(), Kind.Primary)
-        if (RunState.running) {
-            Text("正在运行的任务使用开始时的设置，修改在下次开始时生效。", color = c.muted, fontSize = 12.sp)
-        }
-        XButton("重新打开开始引导", reopenGuide, Modifier.fillMaxWidth(), Kind.Secondary)
-        Text("账号、密码保存在本应用的私有目录，卸载应用会一并删除。", color = c.faint, fontSize = 12.sp)
-    }
-}
+// 设置 is in SettingsPages.kt (二级菜单).
 
 @Composable
 fun SwitchRow(label: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit) {
@@ -223,7 +190,7 @@ private fun StepCard(title: String, body: String, consequence: String, done: Boo
 fun KeepAliveScreen() {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(Dimens.pad),
         verticalArrangement = Arrangement.spacedBy(Dimens.gap)) {
-        PageHeader("后台保活", "让任务在息屏和后台时继续运行")
+        PageHeader("权限设置", "通知、电池优化、自启动：让任务在息屏和后台时继续运行")
         KeepAliveContent()
     }
 }
@@ -264,23 +231,23 @@ private fun StepIndicator(count: Int, step: Int) {
     }
 }
 
-/** 欢迎 > 免责声明 > 账号 > 答题来源 > 推送服务 > 后台保活 */
+/**
+ * 欢迎 > 免责声明 > 账号 > 答题来源 > 权限设置. Push notifications are not a guide step on the
+ * phone: they default to 本机通知, and the notification permission is part of 权限设置.
+ */
 @Composable
 fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val c = X.colors
     val scope = rememberCoroutineScope()
-    val steps = listOf("欢迎", "免责声明", "账号", "答题来源", "推送服务", "后台保活")
+    val steps = listOf("欢迎", "免责声明", "账号", "答题来源", "权限设置")
     var step by rememberSaveable { mutableIntStateOf(0) }
     var typed by rememberSaveable { mutableStateOf("") }
     var problem by remember { mutableStateOf("") }
 
     // Only the answer-source step blocks 下一步 (like the desktop guide); it can be skipped with 稍后配置.
     LaunchedEffect(step, SettingsModel.values.toMap()) {
-        problem = if (step == 3) {
-            val p = SettingsModel.problem(ctx)
-            if (p.startsWith("还没有填写手机号")) "" else p
-        } else ""
+        problem = if (step == 3) SettingsModel.guideProblem(ctx) else ""
     }
 
     val target = remember { normalize(DISCLAIMER) }
@@ -306,12 +273,12 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
             onDismissRequest = { unfinished = emptyList() },
             containerColor = c.surface, titleContentColor = c.text, textContentColor = c.text,
             shape = RoundedCornerShape(Dimens.radiusLarge),
-            title = { Text("后台保活还没有完成") },
+            title = { Text("权限设置还没有完成") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("以下设置还没有完成，可能导致：", fontSize = 14.sp)
                     unfinished.forEach { (_, consequence) -> Consequence(consequence) }
-                    Text("之后可以在“后台保活”页面继续设置。", color = c.muted, fontSize = 12.sp)
+                    Text("之后可以在“权限”页面继续设置。", color = c.muted, fontSize = 12.sp)
                 }
             },
             confirmButton = { XButton("去完成设置", { unfinished = emptyList() }, kind = Kind.Primary) },
@@ -328,11 +295,12 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
                 when (s) {
                     0 -> XCard(Modifier.fillMaxWidth(), title = "欢迎使用学习通PLUS 手机版") {
                         Text("与电脑版使用同一套任务逻辑。接下来几步完成：", color = c.text, fontSize = 14.sp)
-                        listOf("阅读免责声明", "填写学习通账号", "选择章节检测的答题来源", "配置推送服务",
-                            "设置后台保活（允许通知、关闭电池优化、自启动与后台运行）").forEach {
+                        listOf("阅读免责声明", "填写学习通账号", "选择章节检测的答题来源",
+                            "权限设置（允许通知、关闭电池优化、自启动与后台运行）").forEach {
                             Text("• $it", color = c.text, fontSize = 14.sp)
                         }
-                        Text("之后都可以在“设置”和“后台保活”里修改。", color = c.muted, fontSize = 12.sp)
+                        Text("任务结束和出错时默认用本机通知提醒，可在“设置 → 通知推送”里改成其他推送服务。之后都可以在“设置”和“权限”里修改。",
+                            color = c.muted, fontSize = 12.sp)
                     }
                     1 -> {
                         XCard(Modifier.fillMaxWidth(), padding = 14.dp) {
@@ -346,16 +314,16 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
                         XProgress(done.toFloat() / target.length, color = if (canNext) c.success else c.accent)
                         Text("$done / ${target.length}", color = c.muted, fontSize = 12.sp)
                     }
-                    2 -> XCard(Modifier.fillMaxWidth(), title = "学习通账号", subtitle = "课程 ID 可以留空，开始运行时再选择") { BasicFields() }
+                    2 -> XCard(Modifier.fillMaxWidth(), title = "学习通账号", subtitle = "课程可以在运行面板“识别课程”后选择，或开始运行时再选") {
+                        BasicFields(listOf("common.use_cookies", "common.username", "common.password"))
+                        if (SettingsModel.values["common.use_cookies"] == "true") {
+                            Text("请在“设置 → 账号”里导入 cookies.txt。", color = c.warning, fontSize = 12.sp)
+                        }
+                    }
                     3 -> {
                         SettingsModel.group("tiku")?.let { SettingsGroupCard(it) }
                         SettingsModel.group("answer")?.let { SettingsGroupCard(it, appearDelay = 60) }
                         if (problem.isNotEmpty()) Consequence(problem)
-                    }
-                    4 -> {
-                        Text("任务结束或出错时推送到手机上的其他应用（例如微信里的 Server酱）。不需要可以选“不推送”。",
-                            color = c.muted, fontSize = 12.sp)
-                        SettingsModel.group("notify")?.let { SettingsGroupCard(it) }
                     }
                     else -> KeepAliveContent()
                 }
@@ -364,7 +332,7 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (step > 0) XButton("上一步", { step-- })
             Spacer(Modifier.weight(1f))
-            if (step in 2..4) XButton("稍后配置", { next() }, kind = Kind.Ghost)
+            if (step in 2..3) XButton("稍后配置", { next() }, kind = Kind.Ghost)
             XButton(if (step == steps.size - 1) "开始使用" else "下一步", { next() }, kind = Kind.Primary, enabled = canNext)
         }
     }

@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,18 +58,22 @@ import kotlin.random.Random
 /** Where the top-left brand icon is (root coordinates): the splash logo lands there. */
 object Brand {
     var iconRect by mutableStateOf<Rect?>(null)
+    var titleRect by mutableStateOf<Rect?>(null)
+    /** Opacity of the brand row while the splash logo lands on it (cross-fade at the end). */
+    var revealAlpha by mutableFloatStateOf(0f)
 }
 
 /** Top-left brand, like the desktop nav pane: icon + 学习通PLUS + 学习通课程助手. */
 @Composable
 fun BrandRow(hidden: Boolean, modifier: Modifier = Modifier) {
     val c = X.colors
-    val a = if (hidden) 0f else 1f
+    val a = if (hidden) Brand.revealAlpha else 1f
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Image(painterResource(R.drawable.brand_icon), null,
             Modifier.size(36.dp).alpha(a).onGloballyPositioned { Brand.iconRect = it.boundsInRoot() })
         Column(Modifier.alpha(a)) {
-            Text("学习通PLUS", color = c.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text("学习通PLUS", color = c.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.onGloballyPositioned { Brand.titleRect = it.boundsInRoot() })
             Text("学习通课程助手", color = c.muted, fontSize = 11.sp)
         }
     }
@@ -89,6 +94,7 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
     val c = X.colors
     var shown by remember { mutableIntStateOf(0) }
     var logoRect by remember { mutableStateOf<Rect?>(null) }
+    var textRect by remember { mutableStateOf<Rect?>(null) }
     val fly = remember { Animatable(0f) }
     val textAlpha = remember { Animatable(1f) }
     val intro = remember { Animatable(0f) }
@@ -111,7 +117,13 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
         snapshotFlow { Brand.iconRect }.first { it != null }
         delay(16)  // one frame for the page underneath to lay out
         coroutineScope {
-            launch { delay(160); textAlpha.animateTo(0f, tween(320, easing = OutCubic)) }
+            // Icon and text travel together; on landing the text cross-fades into the brand title.
+            launch {
+                delay(560)
+                val reveal = Animatable(0f)
+                launch { textAlpha.animateTo(0f, tween(160)) }
+                reveal.animateTo(1f, tween(160)) { Brand.revealAlpha = value }
+            }
             fly.animateTo(1f, tween(720, easing = InOutCubic))
         }
         onPhase(SplashPhase.Done)
@@ -135,7 +147,18 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
         val p = fly.value
         val dx = if (start != null && target != null && phase == SplashPhase.Fly) (target.left - start.left) * p else 0f
         val dy = if (start != null && target != null && phase == SplashPhase.Fly) (target.top - start.top) * p else 0f
-        val s = if (start != null && target != null && phase == SplashPhase.Fly) 1f + (target.width / start.width - 1f) * p else 1f
+        val flying = start != null && target != null && phase == SplashPhase.Fly
+        val s1 = if (flying) target!!.width / start!!.width else 1f
+        val s = 1f + (s1 - 1f) * p
+        // Extra text move (in the row's unscaled pixels) so the text ends on the brand title,
+        // not just wherever scaling the row would put it.
+        val title = Brand.titleRect
+        val tr = textRect
+        val (tx, ty) = if (flying && title != null && tr != null) {
+            val finalX = target!!.left + (tr.left - start!!.left) * s1
+            val finalCy = target.top + (tr.center.y - start.top) * s1
+            ((title.left - finalX) / s1) to ((title.center.y - finalCy) / s1)
+        } else 0f to 0f
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Row(
                 Modifier.offset { IntOffset(dx.roundToInt(), dy.roundToInt()) }
@@ -152,10 +175,14 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
                         // Keep measuring while the text types (the centred row widens and the
                         // icon moves left); the flight starts from where it is at that moment.
                         .onGloballyPositioned { if (phase == SplashPhase.Splash) logoRect = it.boundsInRoot() })
-                Spacer(Modifier.width(20.dp))
-                Row(Modifier.alpha(textAlpha.value), verticalAlignment = Alignment.CenterVertically) {
-                    Text(SPLASH_TEXT.take(shown), color = c.text, fontSize = 32.sp, fontWeight = FontWeight.Black)
-                    Caret()
+                // 40 sp text and a 27 dp gap: scaled with the icon (96 -> 36 dp) they become the
+                // brand's 15 sp title and 10 dp gap.
+                Spacer(Modifier.width(27.dp))
+                Row(Modifier.graphicsLayer { translationX = tx * p; translationY = ty * p; alpha = textAlpha.value },
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(SPLASH_TEXT.take(shown), color = c.text, fontSize = 40.sp, fontWeight = FontWeight.Black,
+                        modifier = Modifier.onGloballyPositioned { if (phase == SplashPhase.Splash) textRect = it.boundsInRoot() })
+                    if (phase == SplashPhase.Splash) Caret()
                 }
             }
         }

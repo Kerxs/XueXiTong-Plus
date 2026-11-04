@@ -181,7 +181,8 @@ ApplicationWindow {
     // ---- splash hand-off: the splash logo moves from the screen centre to the nav-pane brand ----
     // The splash (a separate window) was centred on the screen; this copy of its logo starts at
     // that same spot inside the main window, so when the splash card dissolves the logo stays
-    // put, then glides and shrinks onto the brand icon in the top-left while its text fades.
+    // put, then glides and shrinks onto the brand in the top-left. Icon and text move together:
+    // the text lands on the brand title (size and position), then cross-fades into it.
     readonly property bool splashIntro: typeof startup !== "undefined" && startup && startup.splashShown && Theme.motion
     Item {
         id: introLogo
@@ -212,6 +213,11 @@ ApplicationWindow {
                 font.family: "Microsoft YaHei UI"
                 font.pixelSize: 44
                 font.weight: Font.Black
+                // Extra move / size so that, with the whole row scaled, the text ends on the brand title.
+                transform: [
+                    Scale { id: textScale; origin.x: 0; origin.y: introText.height / 2 },
+                    Translate { id: textShift }
+                ]
             }
         }
 
@@ -221,11 +227,17 @@ ApplicationWindow {
             const cx = (s ? s.virtualX + s.width / 2 : window.x + window.width / 2) - window.x
             const cy = (s ? s.virtualY + s.height / 2 : window.y + window.height / 2) - window.y - 12
             const target = brandIcon.mapToItem(window.contentItem, 0, 0)
+            const k = brandIcon.width / 112
             fly.fromX = cx - width / 2
             fly.fromY = cy - height / 2
             fly.toX = target.x
             fly.toY = target.y
-            fly.toScale = brandIcon.width / 112
+            fly.toScale = k
+            // Where the brand title is, in this row's unscaled coordinates once the row has landed.
+            const title = brandTitle.mapToItem(window.contentItem, 0, 0)
+            fly.textScale = brandTitle.font.pixelSize / (introText.font.pixelSize * k)
+            fly.textDx = (title.x - target.x) / k - introText.x
+            fly.textDy = (title.y + brandTitle.height / 2 - target.y) / k - (introText.y + introText.height / 2)
             fly.start()
         }
 
@@ -236,12 +248,23 @@ ApplicationWindow {
             property real toX: 0
             property real toY: 0
             property real toScale: 0.32
+            property real textScale: 1
+            property real textDx: 0
+            property real textDy: 0
             NumberAnimation { target: introLogo; property: "x"; from: fly.fromX; to: fly.toX; duration: 720; easing.type: Easing.InOutCubic }
             NumberAnimation { target: introLogo; property: "y"; from: fly.fromY; to: fly.toY; duration: 720; easing.type: Easing.InOutCubic }
             NumberAnimation { target: introLogo; property: "scale"; from: 1; to: fly.toScale; duration: 720; easing.type: Easing.InOutCubic }
+            NumberAnimation { target: textScale; property: "xScale"; from: 1; to: fly.textScale; duration: 720; easing.type: Easing.InOutCubic }
+            NumberAnimation { target: textScale; property: "yScale"; from: 1; to: fly.textScale; duration: 720; easing.type: Easing.InOutCubic }
+            NumberAnimation { target: textShift; property: "x"; from: 0; to: fly.textDx; duration: 720; easing.type: Easing.InOutCubic }
+            NumberAnimation { target: textShift; property: "y"; from: 0; to: fly.textDy; duration: 720; easing.type: Easing.InOutCubic }
+            // Landing: the flying text hands over to the real brand row.
             SequentialAnimation {
-                PauseAnimation { duration: 160 }
-                NumberAnimation { target: introText; property: "opacity"; from: 1; to: 0; duration: 320; easing.type: Easing.OutCubic }
+                PauseAnimation { duration: 560 }
+                ParallelAnimation {
+                    NumberAnimation { target: introText; property: "opacity"; from: 1; to: 0; duration: 160 }
+                    NumberAnimation { target: brandRow; property: "opacity"; from: 0; to: 1; duration: 160 }
+                }
             }
             onFinished: introLogo.introDone = true
         }
@@ -291,8 +314,8 @@ ApplicationWindow {
                         spacing: 10
                         Layout.leftMargin: 4
                         Layout.bottomMargin: 22
-                        // Hidden while the splash logo flies in; shown the moment it lands.
-                        opacity: introLogo.visible ? 0 : 1
+                        // Hidden while the splash logo flies in; fades in as it lands (see `fly`).
+                        opacity: window.splashIntro ? 0 : 1
                         Image {
                             id: brandIcon
                             source: controller.iconUrl
@@ -305,7 +328,7 @@ ApplicationWindow {
                         }
                         ColumnLayout {
                             spacing: 0
-                            Text { text: controller.appName; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 15; font.weight: Font.DemiBold }
+                            Text { id: brandTitle; text: controller.appName; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 15; font.weight: Font.DemiBold }
                             Text { text: "学习通课程助手"; color: Theme.muted; font.family: Theme.uiFont; font.pixelSize: 11 }
                         }
                     }

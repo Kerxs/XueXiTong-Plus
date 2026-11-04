@@ -9,7 +9,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Any
 from tqdm import tqdm
-from api import pause
+from api import net, pause
 from api.answer import Tiku
 from api.base import Chaoxing, Account, StudyResult
 from api.exceptions import LoginError, InputFormatError
@@ -210,7 +210,20 @@ def init_config():
         common_config, tiku_config, notification_config = load_config_from_file(args.config)
     else:
         common_config, tiku_config, notification_config = build_config_from_args(args)
+    register_config_secrets(common_config, tiku_config, notification_config)
     return common_config, tiku_config, notification_config, args.config
+
+
+def register_config_secrets(common_config, tiku_config, notification_config) -> None:
+    """Account, keys, tokens and push addresses never appear in logs or push messages (api/logger.redact)."""
+    from api.logger import register_secret
+
+    register_secret(common_config.get("username"))
+    register_secret(common_config.get("password"))
+    for key in ("tokens", "key", "siliconflow_key", "go_authorization"):
+        for part in str(tiku_config.get(key) or "").split(","):
+            register_secret(part)
+    register_secret(notification_config.get("url"))
 
 
 def init_chaoxing(common_config, tiku_config, config_path=None):
@@ -394,7 +407,19 @@ class JobProcessor:
                 logger.info("Queue shut down")
                 return
 
-            task.result = process_chapter(self.chaoxing, task.course, task.point, self.speed)
+            try:
+                task.result = process_chapter(self.chaoxing, task.course, task.point, self.speed)
+            except Exception as e:
+                # An exception used to end this worker thread, leaving its chapter unfinished in the
+                # queue: task_queue.join() then waited forever and the run hung.
+                if net.is_network_error(e):
+                    net.wait_for_network()
+                    # A network outage is not the chapter's fault: retry it without using a try.
+                    self.retry_queue.put(task)
+                    continue
+                logger.error("处理章节出错: {} - {}: {}: {}", task.course["title"], task.point["title"],
+                             type(e).__name__, e)
+                task.result = ChapterResult.ERROR
 
             match task.result:
                 case ChapterResult.SUCCESS:
@@ -564,8 +589,10 @@ def main():
         # 初始化配置
         common_config, tiku_config, notification_config, config_path = init_config()
 
-        # 强制播放按照配置文件调节
-        common_config["speed"] = min(2.0, max(1.0, common_config.get("speed", 1.0)))
+        # 倍速已失效：视频统一按 1 倍速观看（配置里的 speed 不再生效）
+        if float(common_config.get("speed", 1.0) or 1.0) != 1.0:
+            logger.warning("视频倍速设置已失效，统一按 1 倍速观看")
+        common_config["speed"] = 1.0
         common_config["notopen_action"] = common_config.get("notopen_action", "retry")
         
         # 初始化增加章节学习次数配置
@@ -581,8 +608,15 @@ def main():
         notification = notification.get_notification_from_config()
         notification.init_notification()
 
-        # 检查当前登录状态
-        _login_state = chaoxing.login(login_with_cookies=common_config.get("use_cookies", False))
+        # 检查当前登录状态（启动时没有网络：等网络恢复后重试，而不是直接退出）
+        for attempt in range(3):
+            try:
+                _login_state = chaoxing.login(login_with_cookies=common_config.get("use_cookies", False))
+                break
+            except Exception as e:
+                if attempt == 2 or not net.is_network_error(e):
+                    raise
+                net.wait_for_network()
         if not _login_state["status"]:
             raise LoginError(_login_state["msg"])
 
@@ -629,6 +663,14 @@ def main():
     except UserCancelled as e:
         logger.warning(str(e))
         sys.exit(0)
+    except LoginError as e:
+        # Expected (wrong password, expired cookies): one clear line, no traceback.
+        logger.error(f"登录失败：{e}。请检查账号密码，或重新导入 cookies 后再试")
+        try:
+            notification.send(f"chaoxing : 登录失败：{e}")
+        except Exception:
+            pass
+        sys.exit(1)
     except SystemExit as e:
         if e.code != 0:
             logger.error(f"错误: 程序异常退出, 返回码: {e.code}")

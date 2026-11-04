@@ -19,6 +19,10 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -88,22 +92,41 @@ fun AppRoot(splash: Boolean) {
     val m = X.motion
     var onboarded by remember { mutableStateOf(prefs(ctx).getInt("onboarding", 0) >= ONBOARDING_VERSION) }
     var loadError by remember { mutableStateOf("") }
-    var phase by remember { mutableStateOf(if (splash && m.enabled) SplashPhase.Splash else SplashPhase.Done) }
+    var attempt by remember { mutableIntStateOf(0) }
+    var phase by remember {
+        mutableStateOf(if (splash && m.enabled && UiPrefs.splash) SplashPhase.Splash else SplashPhase.Done)
+    }
     val bg by animateColorAsState(c.bg, m.slowSpec(), label = "bg")
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(attempt) {
         Brand.iconRect = null
+        Brand.titleRect = null
+        Brand.revealAlpha = 0f
+        Courses.load(ctx)
+        loadError = ""
         runCatching { SettingsModel.load(ctx) }.onFailure {
-            loadError = "运行组件加载失败：${it.message}"
+            // Fallback screen instead of a spinner forever: the reason, 重试, 复制错误信息.
+            loadError = "运行组件加载失败：${it.javaClass.simpleName}: ${it.message}"
             phase = SplashPhase.Done
+        }
+    }
+    // 自动检查更新 once the app is on screen (desktop: checkOnStartup).
+    LaunchedEffect(phase, SettingsModel.loaded) {
+        if (phase == SplashPhase.Done && SettingsModel.loaded && UiPrefs.autoUpdate && Updater.state == "idle") {
+            Updater.check(ctx, quiet = true)
+        }
+    }
+    // A task process the system killed must not stay "正在运行" (P1 / P3).
+    LaunchedEffect(RunState.running) {
+        while (RunState.running) {
+            kotlinx.coroutines.delay(5000)
+            if (RunState.running && !RunState.workerAlive(ctx)) RunState.workerLost()
         }
     }
 
     Box(Modifier.fillMaxSize().background(bg)) {
         when {
-            loadError.isNotEmpty() -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                Text(loadError, color = c.danger)
-            }
+            loadError.isNotEmpty() -> LoadErrorScreen(loadError) { attempt++ }
             !SettingsModel.loaded || phase == SplashPhase.Splash -> if (phase == SplashPhase.Done) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = c.accent) }
             }
@@ -125,12 +148,86 @@ fun AppRoot(splash: Boolean) {
             }
         }
         SplashOverlay(
-            loaded = SettingsModel.loaded,
+            loaded = SettingsModel.loaded || loadError.isNotEmpty(),
             status = "正在加载运行组件",
             phase = phase,
             onPhase = { phase = it },
         )
+        if (Updater.showDialog) UpdateDialog()
+        if (Courses.showPicker) CoursePickerDialog { ids ->
+            Courses.showPicker = false
+            if (ids != null) Courses.choose(ctx, ids)
+        }
     }
+}
+
+@Composable
+private fun LoadErrorScreen(message: String, retry: () -> Unit) {
+    val c = X.colors
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp,
+        Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("运行组件没有加载成功", color = c.text, fontSize = androidx.compose.ui.unit.TextUnit(18f, androidx.compose.ui.unit.TextUnitType.Sp))
+        Text(message, color = c.danger)
+        Text("可以重试；仍然失败请复制错误信息反馈。", color = c.muted)
+        XButton("重试", retry, Modifier.fillMaxWidth(), Kind.Primary)
+        XButton("复制错误信息", { clipboard.setText(androidx.compose.ui.text.AnnotatedString(message)) }, Modifier.fillMaxWidth())
+    }
+}
+
+/** Desktop UpdateDialog.qml: version, notes, download progress, 下载并安装 / 稍后. */
+@Composable
+private fun UpdateDialog() {
+    val ctx = LocalContext.current
+    val c = X.colors
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val rel = Updater.release
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (Updater.state != "downloading") Updater.showDialog = false },
+        containerColor = c.surface, titleContentColor = c.text, textContentColor = c.text,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(Dimens.radiusLarge),
+        title = {
+            Text(when (Updater.state) {
+                "available", "downloading", "ready" -> "发现新版本 ${rel?.version}"
+                "latest" -> "已是最新版本"
+                else -> "检查更新"
+            })
+        },
+        text = {
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+                when (Updater.state) {
+                    "latest" -> Text("当前版本 ${Updater.currentVersion(ctx)} 已是最新。" + Updater.error)
+                    "error" -> Text(Updater.error, color = c.danger)
+                    else -> {
+                        Text("当前版本 ${Updater.currentVersion(ctx)}", color = c.muted)
+                        if (!rel?.notes.isNullOrBlank()) Text(rel!!.notes.take(1200))
+                        if (Updater.state == "downloading") XProgress(Updater.progress)
+                        if (Updater.error.isNotEmpty()) Text(Updater.error, color = c.warning)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            // A newer release is known: download (or retry after a failed download).
+            val canDownload = rel != null && Updater.newer(rel.version, Updater.currentVersion(ctx))
+            when {
+                Updater.state == "downloading" ->
+                    XButton("正在下载 ${(Updater.progress * 100).toInt()}%", {}, kind = Kind.Primary, enabled = false)
+                Updater.state == "ready" ->
+                    XButton("安装", { Updater.downloadedFile(ctx)?.let { Updater.install(ctx, it) } }, kind = Kind.Primary)
+                canDownload && (Updater.state == "available" || Updater.state == "error") ->
+                    XButton(if (Updater.state == "error") "重新下载" else "下载并安装",
+                        { scope.launch { Updater.downloadAndInstall(ctx) } }, kind = Kind.Primary)
+                else -> XButton("关闭", { Updater.showDialog = false })
+            }
+        },
+        dismissButton = {
+            if (Updater.state in setOf("available", "ready", "error") && rel != null) {
+                XButton("稍后", { Updater.showDialog = false }, kind = Kind.Ghost)
+            }
+        },
+    )
 }
 
 @Composable
@@ -162,7 +259,7 @@ private fun MainShell(brandHidden: Boolean, reopenGuide: () -> Unit) {
                     NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, colors = itemColors,
                         icon = { Icon(Icons.Filled.Settings, null) }, label = { Text("设置") })
                     NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, colors = itemColors,
-                        icon = { Icon(Icons.Filled.BatteryChargingFull, null) }, label = { Text("后台保活") })
+                        icon = { Icon(Icons.Filled.BatteryChargingFull, null) }, label = { Text("权限") })
                 }
             }
         },

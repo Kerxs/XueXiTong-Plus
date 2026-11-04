@@ -13,7 +13,7 @@ val sharedAssets = layout.buildDirectory.dir("generated/sharedAssets")
 
 val syncSharedPython by tasks.registering(Sync::class) {
     from(repoRoot) {
-        include("main.py", "api/*.py", "ui/output_parser.py", "ui/advanced.py", "ui/cloudmodels.py")
+        include("main.py", "api/*.py", "core/*.py", "ui/output_parser.py", "ui/advanced.py", "ui/cloudmodels.py")
     }
     into(sharedPython)
 }

@@ -57,13 +57,16 @@ Card {
             elide: Text.ElideRight
         }
 
-        Label { text: "视频速度"; color: Theme.muted; font.pixelSize: 12 }
+        Label { text: "视频速度（倍速已失效）"; color: Theme.muted; font.pixelSize: 12 }
         Label { text: "并行章节数"; color: Theme.muted; font.pixelSize: 12 }
+        // 倍速已失效：视频统一按 1 倍速观看，这里只显示固定值。
         AppComboBox {
             Layout.fillWidth: true
-            model: controller.speedOptions.map(v => v === "1" ? "标准 · 1×" : v + "×")
-            currentIndex: Math.max(0, controller.speedOptions.indexOf(controller.speed))
-            onActivated: index => controller.speed = controller.speedOptions[index]
+            enabled: false
+            model: ["1× · 倍速已失效"]
+            currentIndex: 0
+            ToolTip.visible: hovered
+            ToolTip.text: "倍速已失效，视频按 1 倍速观看；看到课程要求的比例（如 90%）平台确认后即完成"
         }
         AppSpinBox {
             Layout.fillWidth: true

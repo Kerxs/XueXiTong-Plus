@@ -50,7 +50,12 @@ class SettingsTest(unittest.TestCase):
         self.assertNotIn("tiku.http_proxy", ids)
         self.assertIn("aiprovider", types_)
         self.assertIn("notification.provider", ids)          # 推送服务 is part of the guide
-        self.assertNotIn("本机", json.dumps(schema, ensure_ascii=False))
+        text = json.dumps(schema, ensure_ascii=False)
+        self.assertNotIn("本机模型", text)
+        self.assertNotIn("127.0.0.1", json.dumps([f for g in schema["groups"] if g["id"] == "tiku" for f in g["fields"]],
+                                                  ensure_ascii=False))
+        notify = next(f for g in schema["groups"] for f in g["fields"] if f["id"] == "notification.provider")
+        self.assertEqual(notify["options"][0]["value"], "Local")   # 本机通知 first on the phone
         self.assertTrue(all(p["endpoint"].startswith("https://") for p in schema["aiProviders"]))
 
     def test_template_placeholders_load_as_empty(self):
@@ -68,7 +73,7 @@ class SettingsTest(unittest.TestCase):
         config = configparser.ConfigParser()
         config.read(self.config, encoding="utf-8")
         self.assertEqual(config["common"]["username"], "13800000000")
-        self.assertEqual(config["common"]["speed"], "1.5")
+        self.assertEqual(config["common"]["speed"], "1")  # 倍速已失效：always 1
         self.assertEqual(config["tiku"]["provider"], "AI")
         self.assertEqual(config["tiku"]["http_proxy"], "")
         again = json.loads(self.bridge.load_settings(self.config, self.template))
@@ -84,7 +89,7 @@ class SettingsTest(unittest.TestCase):
         self.assertIn("服务商", self.bridge.setup_problem(json.dumps(custom)))
         self.assertEqual(self.bridge.setup_problem(json.dumps(cloud)), "")
         self.assertIn("API Key", self.bridge.setup_problem(json.dumps({**cloud, "tiku.key": ""})))
-        self.assertIn("手机号", self.bridge.setup_problem(json.dumps({**cloud, "common.username": ""})))
+        self.assertIn("账号", self.bridge.setup_problem(json.dumps({**cloud, "common.username": ""})))
 
 
 class RunTest(unittest.TestCase):

@@ -81,7 +81,11 @@ object SettingsModel {
 
     suspend fun save(ctx: Context) = withContext(Dispatchers.IO) { PythonBridge.saveSettings(ctx, json()) }
 
+    /** Why 开始运行 cannot start ("" = ready). Same rule and wording as the desktop (core/settings.py). */
     suspend fun problem(ctx: Context): String = withContext(Dispatchers.IO) { PythonBridge.setupProblem(ctx, json()) }
+
+    /** The guide's 答题来源 step (stricter: 题库 needs its token / address). */
+    suspend fun guideProblem(ctx: Context): String = withContext(Dispatchers.IO) { PythonBridge.guideProblem(ctx, json()) }
 
     fun basic(): List<JSONObject> = schema.optJSONArray("basic").objects()
     fun group(id: String): JSONObject? = schema.optJSONArray("groups").objects().firstOrNull { it.optString("id") == id }
@@ -168,7 +172,7 @@ fun SettingsGroupCard(group: JSONObject, appearDelay: Int = 0) {
 
 @Composable
 fun BasicFields(ids: List<String>? = null) {
-    SettingsModel.basic().filter { ids == null || it.optString("id") in ids }.forEach { FieldView(it) }
+    SettingsModel.basic().filter { ids == null || it.optString("id") in ids }.forEach { AnimatedField(it) }
 }
 
 /** Dependent fields appear / disappear the way the desktop AdvancedOptions does (fade + height). */

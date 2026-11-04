@@ -25,12 +25,16 @@ import traceback
 _answers: "queue.Queue[str]" = queue.Queue()
 
 BASIC_FIELDS = [
-    {"id": "common.username", "label": "手机号", "type": "text", "default": ""},
-    {"id": "common.password", "label": "密码", "type": "secret", "default": ""},
+    {"id": "common.use_cookies", "label": "使用 cookies 登录", "type": "switch", "default": "false",
+     "hint": "开启后用导入的 cookies.txt 登录，账号密码不参与登录"},
+    {"id": "common.username", "label": "手机号", "type": "text", "default": "",
+     "show": {"key": "common.use_cookies", "on": False}},
+    {"id": "common.password", "label": "密码", "type": "secret", "default": "",
+     "show": {"key": "common.use_cookies", "on": False}},
     {"id": "common.course_list", "label": "课程 ID", "type": "text", "default": "",
      "hint": "多个用英文逗号隔开；留空则开始时选择"},
-    {"id": "common.speed", "label": "视频倍速", "type": "number", "default": "1",
-     "min": 1, "max": 2, "step": 0.25, "decimals": 2, "suffix": "x"},
+    # 倍速已失效：不再提供设置，保存时固定写 1（main.py 也会强制 1 倍速）
+    {"id": "common.speed", "label": "视频倍速", "type": "hidden", "default": "1"},
     {"id": "common.jobs", "label": "同时进行的章节", "type": "number", "default": "1",
      "min": 1, "max": 8, "step": 1, "decimals": 0, "suffix": "个"},
     {"id": "common.retry_interval", "label": "重试等待", "type": "number", "default": "5",
@@ -41,9 +45,71 @@ BASIC_FIELDS = [
 _PLACEHOLDERS = {"xxx", "xxxxxx", "xxx,xxx,xxx"}
 
 
-def setup(files_dir: str) -> None:
+_data_dir = ""
+
+
+def setup(files_dir: str, data_dir: str = "") -> None:
     """Data files are opened relative to sys._MEIPASS (see api/cxsecret_font.resource_path)."""
+    global _data_dir
     sys._MEIPASS = files_dir  # type: ignore[attr-defined]
+    _data_dir = data_dir or os.path.join(files_dir, "data")
+    os.makedirs(_data_dir, exist_ok=True)
+
+
+# ---------------------------------------------------------------- 数据与隐私 (core/account.py, shared)
+
+def data_stats() -> str:
+    from core import account
+
+    return json.dumps({"logSize": account.log_size_text(_data_dir), "hasCookies": account.has_cookies(_data_dir)})
+
+
+def clear_logs() -> int:
+    from core import account
+
+    removed = 0
+    for path in account.log_files(_data_dir):
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def clear_account_data(config_path: str) -> None:
+    """Blank the account, password and cookies login in config.ini and delete cookies files."""
+    from core import account
+
+    account.clear_account_data(_data_dir, config_path)
+
+
+def reset_config(config_path: str, template_path: str) -> None:
+    """Restore config.ini from the template but keep the account fields (desktop resetConfig)."""
+    keep = {k: v for k, v in json.loads(load_settings(config_path, template_path)).items()
+            if k in ("common.username", "common.password", "common.use_cookies")}
+    try:
+        os.remove(config_path)
+    except FileNotFoundError:
+        pass
+    values = json.loads(load_settings(config_path, template_path))
+    values.update(keep)
+    save_settings(config_path, template_path, json.dumps(values))
+
+
+# ---------------------------------------------------------------- 识别课程 (worker.py --list-courses)
+
+def list_courses(config_path: str) -> str:
+    """Log in with the saved account and return the course list (core/courses.py, shared)."""
+    os.chdir(_data_dir)
+    try:
+        from core.courses import list_courses as read_courses
+
+        payload = read_courses(config_path)
+    except Exception as exc:  # e.g. the task code itself cannot be imported
+        payload = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    payload.pop("code", None)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------- settings
@@ -63,16 +129,11 @@ _DROP_TYPES = {"localmodels"}
 _DROP_IDS = {"tiku.endpoint", "tiku.http_proxy"}
 _HINTS = {
     "tiku.key": "在所选服务商的控制台创建",
+    "tiku.url": "自建 TikuAdapter 服务的地址（手机要能访问到），例如 http://192.168.1.10:8060/adapter-service/search",
 }
 _LABELS = {
     "aiprovider": "模型服务商",
 }
-
-
-def _cloud_endpoints() -> list[str]:
-    from ui import cloudmodels
-
-    return [p["endpoint"] for p in cloudmodels.PROVIDERS]
 
 
 def settings_schema() -> str:
@@ -88,6 +149,13 @@ def settings_schema() -> str:
                 f = {**f, "hint": _HINTS[f["id"]]}
             if f["type"] in _LABELS:
                 f = {**f, "label": _LABELS[f["type"]]}
+            if f["id"] == "notification.provider":
+                # 本机通知 = Android's own notification shade (api.notification.Local).
+                f = {**f, "options": [{"value": "Local", "label": "本机通知"}, *f["options"]],
+                     "hint": "本机通知：直接显示在手机通知栏，不需要第三方服务"}
+            elif f["section"] == "notification" and f.get("show"):
+                show = f["show"] if isinstance(f["show"], list) else [f["show"]]
+                f = {**f, "show": [*show, {"key": "notification.provider", "ne": "Local"}]}
             fields.append(f)
         groups.append({**group, "fields": fields})
     providers = [{"name": p["name"], "endpoint": p["endpoint"]} for p in cloudmodels.PROVIDERS]
@@ -104,6 +172,10 @@ def load_settings(config_path: str, template_path: str) -> str:
         section, key = f["id"].split(".", 1)
         raw = config.get(section, key, fallback=f["default"]).strip()
         values[f["id"]] = "" if raw.lower() in _PLACEHOLDERS else raw
+    # The template's provider is ServerChan with no address, i.e. not set up: on the phone
+    # the natural default is the system notification.
+    if values.get("notification.provider") == "ServerChan" and not values.get("notification.url"):
+        values["notification.provider"] = "Local"
     return json.dumps(values, ensure_ascii=False)
 
 
@@ -112,6 +184,7 @@ def save_settings(config_path: str, template_path: str, values_json: str) -> Non
 
     values = json.loads(values_json)
     values["tiku.http_proxy"] = ""  # no proxy setting on the phone
+    values["common.speed"] = "1"    # 倍速已失效
     config = _read_config(config_path, template_path)
     advanced.write_values(config, {k: advanced.normalize(k, v) for k, v in values.items()})
     for f in BASIC_FIELDS:
@@ -127,19 +200,17 @@ def save_settings(config_path: str, template_path: str, values_json: str) -> Non
 
 
 def setup_problem(values_json: str) -> str:
-    """Empty string when the run can start, otherwise what is missing."""
-    from ui import advanced
+    """Why 开始运行 cannot start ("" = can start): the same rule as the desktop (core/settings.py)."""
+    from core import settings
 
-    values = json.loads(values_json)
-    if not values.get("common.username") or not values.get("common.password"):
-        return "还没有填写手机号和密码"
-    picked = [p.strip() for p in str(values.get("tiku.provider", "")).split(",")]
-    if "AI" in picked:
-        if str(values.get("tiku.endpoint", "")).strip() not in _cloud_endpoints():
-            return "答题方式用到了 AI，请先选择模型服务商"
-        if not str(values.get("tiku.key", "")).strip():
-            return "答题方式用到了 AI，但还没填写 API Key"
-    return advanced.answer_setup_problem(values)
+    return settings.start_problem(json.loads(values_json), _data_dir, cloud_only=True)
+
+
+def guide_problem(values_json: str) -> str:
+    """The guide's 答题来源 step (also needs the 题库 token / address), as on the desktop."""
+    from core import settings
+
+    return settings.guide_problem(json.loads(values_json), cloud_only=True)
 
 
 def list_models(endpoint: str, key: str, proxy: str) -> str:
@@ -228,7 +299,13 @@ def run(config_path: str, data_dir: str, pause_file: str, sink) -> int:
     code = 0
     try:
         import main
+        from api import notification
 
+        # 本机通知: messages the task sends (finished / error) become Android notifications.
+        def _notify(message: str) -> None:
+            sink.emit(json.dumps({"type": "notify", "text": message}, ensure_ascii=False))
+
+        notification.set_local_handler(_notify)
         main.main()
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)

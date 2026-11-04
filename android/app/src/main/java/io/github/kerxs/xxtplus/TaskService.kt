@@ -36,6 +36,7 @@ class TaskService : Service() {
         const val ACTION_SYNC = "io.github.kerxs.xxtplus.SYNC"
         const val ACTION_EVENT = "io.github.kerxs.xxtplus.EVENT"
         const val EXTRA_TEXT = "text"
+        const val EXTRA_ALERT = "alertOnFinish"
         const val EXTRA_JSON = "json"
         const val EXTRA_SNAPSHOT = "snapshot"
 
@@ -43,12 +44,17 @@ class TaskService : Service() {
         const val CHANNEL_ALERT = "alert"
         private const val NOTIFY_TASK = 1
         private const val NOTIFY_ALERT = 2
+        private const val NOTIFY_PUSH = 3
         private const val HISTORY = 400
 
         fun send(ctx: Context, action: String, text: String? = null) {
             val intent = Intent(ctx, TaskService::class.java).setAction(action)
             if (text != null) intent.putExtra(EXTRA_TEXT, text)
-            if (action == ACTION_START) ctx.startForegroundService(intent) else ctx.startService(intent)
+            if (action == ACTION_START) {
+                // Read here (UI process): SharedPreferences are not shared live with the :worker process.
+                intent.putExtra(EXTRA_ALERT, UiPrefs.alertOnFinish)
+                ctx.startForegroundService(intent)
+            } else ctx.startService(intent)
         }
 
         fun createChannels(ctx: Context) {
@@ -65,6 +71,9 @@ class TaskService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val history = ArrayDeque<String>()
     private var wakeLock: PowerManager.WakeLock? = null
+    // Keeps Wi-Fi from dozing with the screen off (otherwise requests stall until the screen is on).
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private var worker: Thread? = null
     private var paused = false
     private var course = ""
@@ -72,6 +81,16 @@ class TaskService : Service() {
     private var progress = ""
     private var lastNotify = 0L
     private var startedAt = 0L
+    private var alertOnFinish = true
+    // Run time without pauses (desktop 运行时长 does not count paused time).
+    private var activeMs = 0L
+    private var resumedAt = 0L
+
+    private fun activeNow() = activeMs + if (!paused && resumedAt > 0) System.currentTimeMillis() - resumedAt else 0L
+
+    private fun stateJson(running: Boolean) = JSONObject().put("type", "state").put("running", running)
+        .put("paused", running && paused).put("startedAt", startedAt)
+        .put("activeMs", if (running) activeNow() else 0L).put("at", System.currentTimeMillis()).toString()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -82,7 +101,7 @@ class TaskService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> start()
+            ACTION_START -> { alertOnFinish = intent.getBooleanExtra(EXTRA_ALERT, true); start() }
             ACTION_PAUSE -> setPaused(true)
             ACTION_RESUME -> setPaused(false)
             ACTION_STOP -> finish(stopped = true, code = 0)
@@ -100,13 +119,21 @@ class TaskService : Service() {
         PythonBridge.pauseFile(this).delete()
         paused = false
         startedAt = System.currentTimeMillis()
+        activeMs = 0L
+        resumedAt = startedAt
         val pm = getSystemService(PowerManager::class.java)
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "xxtplus:task").apply {
             setReferenceCounted(false)
             acquire(24 * 60 * 60 * 1000L)
         }
-        record(JSONObject().put("type", "state").put("running", true).put("paused", false)
-            .put("startedAt", startedAt).toString())
+        @Suppress("DEPRECATION")
+        wifiLock = runCatching {
+            applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
+                .createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "xxtplus:task")
+                .apply { setReferenceCounted(false); acquire() }
+        }.getOrNull()
+        watchNetwork()
+        record(stateJson(true))
         val sink = Sink()
         worker = Thread({
             val code = try {
@@ -144,6 +171,7 @@ class TaskService : Service() {
             "progress" -> progress = "${event.optString("name")}  ${event.optInt("percent")}%"
             "prompt" -> alert("需要你确认", event.optString("text"))
             "courselist" -> alert("请选择要学习的课程", "打开学习通PLUS选择课程后继续")
+            "notify" -> pushNotification(event.optString("text"))
         }
         val now = System.currentTimeMillis()
         if (now - lastNotify > 1000) {
@@ -166,8 +194,7 @@ class TaskService : Service() {
             stopSelf()
             return
         }
-        val state = JSONObject().put("type", "state").put("running", true).put("paused", paused)
-            .put("startedAt", startedAt).toString()
+        val state = stateJson(true)
         sendBroadcast(Intent(ACTION_EVENT).setPackage(packageName)
             .putStringArrayListExtra(EXTRA_SNAPSHOT, ArrayList(history + state)))
     }
@@ -181,12 +208,13 @@ class TaskService : Service() {
     private fun setPaused(value: Boolean) {
         if (worker == null) return
         val flag = PythonBridge.pauseFile(this)
+        if (value == paused) return
         if (value) flag.writeText("paused") else flag.delete()
+        if (value) activeMs = activeNow() else resumedAt = System.currentTimeMillis()
         paused = value
         // The wake lock is kept while paused: a paused run is resumed from the notification
         // and should continue at once; it is released on stop / end.
-        record(JSONObject().put("type", "state").put("running", true).put("paused", paused)
-            .put("startedAt", startedAt).toString())
+        record(stateJson(true))
         notifyTask()
     }
 
@@ -194,11 +222,11 @@ class TaskService : Service() {
         PythonBridge.pauseFile(this).delete()
         val was = worker != null
         worker = null
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wakeLock = null
+        releaseLocks()
         record(JSONObject().put("type", "finished").put("stopped", stopped).put("code", code).toString())
-        record(JSONObject().put("type", "state").put("running", false).put("paused", false).toString())
-        if (was && !stopped) {
+        record(stateJson(false))
+        // Skip the end alert when 本机通知 has just said the same thing.
+        if (was && !stopped && alertOnFinish && System.currentTimeMillis() - lastPush > 10_000) {
             alert(if (code == 0) "任务已结束" else "任务异常结束", if (code == 0) "所有课程任务已处理完" else "打开应用查看日志")
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -254,6 +282,24 @@ class TaskService : Service() {
             .build()
     }
 
+    private var lastPush = 0L
+
+    /** 推送服务 = 本机通知: the task's own messages (all done, errors) as system notifications. */
+    private fun pushNotification(raw: String) {
+        val text = raw.removePrefix("chaoxing :").trim()
+        val firstLine = text.lineSequence().firstOrNull().orEmpty()
+        lastPush = System.currentTimeMillis()
+        val n = Notification.Builder(this, CHANNEL_ALERT)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("学习通PLUS")
+            .setContentText(firstLine)
+            .setStyle(Notification.BigTextStyle().bigText(text.take(1500)))
+            .setAutoCancel(true)
+            .setContentIntent(openApp())
+            .build()
+        getSystemService(NotificationManager::class.java).notify(NOTIFY_PUSH, n)
+    }
+
     private fun alert(title: String, text: String) {
         val n = Notification.Builder(this, CHANNEL_ALERT)
             .setSmallIcon(R.drawable.ic_notify)
@@ -265,8 +311,46 @@ class TaskService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIFY_ALERT, n)
     }
 
-    override fun onDestroy() {
+    private fun releaseLocks() {
         wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wifiLock = null
+        networkCallback?.let { cb ->
+            runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(cb) }
+        }
+        networkCallback = null
+    }
+
+    /** Logs network loss / return; the task itself waits for the network (api/net.py). */
+    private fun watchNetwork() {
+        if (networkCallback != null) return
+        val cm = getSystemService(android.net.ConnectivityManager::class.java)
+        var lost = false
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onLost(network: android.net.Network) {
+                main.post {
+                    if (worker == null || lost) return@post
+                    lost = true
+                    record(JSONObject().put("type", "log").put("level", "WARNING")
+                        .put("message", "手机网络已断开，任务会在网络恢复后继续").put("time", "").toString())
+                }
+            }
+
+            override fun onAvailable(network: android.net.Network) {
+                main.post {
+                    if (worker == null || !lost) return@post
+                    lost = false
+                    record(JSONObject().put("type", "log").put("level", "INFO")
+                        .put("message", "手机网络已恢复").put("time", "").toString())
+                }
+            }
+        }
+        if (runCatching { cm.registerDefaultNetworkCallback(cb) }.isSuccess) networkCallback = cb
+    }
+
+    override fun onDestroy() {
+        releaseLocks()
         super.onDestroy()
     }
 }

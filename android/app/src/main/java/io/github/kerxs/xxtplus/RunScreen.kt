@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -72,33 +73,67 @@ fun RunScreen(snackbar: SnackbarHostState, openSettings: () -> Unit, openKeepAli
         TaskService.send(ctx, TaskService.ACTION_START)  // runs either way; without it the notification is hidden
     }
 
-    fun start() = scope.launch {
-        val problem = SettingsModel.problem(ctx)
-        if (problem.isNotEmpty()) {
-            openSettings()
-            snackbar.showSnackbar(problem)
-            return@launch
+    // Guards against double taps while the checks run and the service starts (P1: no duplicate starts).
+    var starting by remember { mutableStateOf(false) }
+    LaunchedEffect(RunState.running) { if (RunState.running) starting = false }
+
+    fun start() {
+        if (starting || RunState.running) return
+        starting = true
+        scope.launch {
+            val problem = SettingsModel.problem(ctx)
+            if (problem.isNotEmpty()) {
+                starting = false
+                openSettings()
+                snackbar.showSnackbar(problem)
+                return@launch
+            }
+            SettingsModel.save(ctx)
+            RunState.reset()
+            if (hasNotificationPermission(ctx)) TaskService.send(ctx, TaskService.ACTION_START)
+            else notifyPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            delay(8000)
+            starting = false  // the service never answered: allow another try
         }
-        SettingsModel.save(ctx)
-        RunState.reset()
-        if (hasNotificationPermission(ctx)) TaskService.send(ctx, TaskService.ACTION_START)
-        else notifyPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
     }
 
-    Column(Modifier.fillMaxSize().padding(horizontal = Dimens.pad), verticalArrangement = Arrangement.spacedBy(Dimens.gap)) {
+    val accountMissing = SettingsModel.values["common.use_cookies"] != "true" &&
+        (SettingsModel.values["common.username"].isNullOrBlank() || SettingsModel.values["common.password"].isNullOrBlank())
+
+    // Short screens: the header, reminders and tiles leave no room for the panes, so the whole
+    // panel scrolls and the panes get a fixed height instead of the remaining space.
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+    val compact = maxHeight < 640.dp
+    val outer = if (compact) Modifier.fillMaxSize().verticalScroll(rememberScrollState()) else Modifier.fillMaxSize()
+    Column(outer.padding(horizontal = Dimens.pad), verticalArrangement = Arrangement.spacedBy(Dimens.gap)) {
         Spacer(Modifier.size(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("运行面板", color = c.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 Text("开始、暂停和查看任务进度", color = c.muted, fontSize = 12.sp)
             }
-            StatusPill(
-                kind = when { RunState.running && RunState.paused -> "paused"; RunState.running -> "running"; else -> "idle" },
-                text = when { RunState.running && RunState.paused -> "已暂停"; RunState.running -> "正在运行"; else -> "未运行" },
-            )
+            // Same states as the desktop status: 正在运行 / 已暂停 / 已完成 / 已停止 / 已退出 / 未运行.
+            val (kind, label) = when {
+                RunState.running && RunState.paused -> "paused" to "已暂停"
+                RunState.running -> "running" to "正在运行"
+                starting -> "paused" to "正在启动"
+                RunState.lastResult == "done" -> "done" to "已完成"
+                RunState.lastResult == "stopped" -> "idle" to "已停止"
+                RunState.lastResult == "error" -> "error" to "已退出"
+                else -> "idle" to "未运行"
+            }
+            StatusPill(kind, label)
+        }
+        AnimatedVisibility(accountMissing, enter = fadeIn(tween(m.normal)) + expandVertically(tween(m.normal)),
+            exit = fadeOut(tween(m.fast)) + shrinkVertically(tween(m.normal))) {
+            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.warningSoft)
+                .clickable { openSettings() }.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                Text("还没有配置账号。请到“设置 → 账号”填写账号密码，或开启 cookies 登录。", color = c.warning, fontSize = 12.sp)
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            XButton("开始运行", { start() }, Modifier.weight(1f), Kind.Primary, enabled = !RunState.running)
+            XButton(if (starting) "正在启动…" else "开始运行", { start() }, Modifier.weight(1f), Kind.Primary,
+                enabled = !RunState.running && !starting)
             val paused = RunState.paused
             XButton(if (paused) "继续" else "暂停",
                 { TaskService.send(ctx, if (paused) TaskService.ACTION_RESUME else TaskService.ACTION_PAUSE) },
@@ -111,15 +146,17 @@ fun RunScreen(snackbar: SnackbarHostState, openSettings: () -> Unit, openKeepAli
             exit = fadeOut(tween(m.fast)) + shrinkVertically(tween(m.normal))) {
             Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.warningSoft)
                 .clickable { openKeepAlive() }.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                Text("后台保活未完成（${missing.joinToString("、") { it.first }}），息屏或切到后台后任务可能被系统停止。点这里设置。",
+                Text("权限设置未完成（${missing.joinToString("、") { it.first }}），息屏或切到后台后任务可能被系统停止。点这里设置。",
                     color = c.warning, fontSize = 12.sp)
             }
         }
+        CourseRow(snackbar)
         Stats()
         var tab by rememberSaveable { mutableStateOf("tasks") }
         val tabs = listOf("tasks" to "任务", "video" to "视频", "work" to "答题", "log" to "日志")
         Segmented(tabs, tab, { tab = it }, Modifier.fillMaxWidth())
-        PageSwitch(tab, { t -> tabs.indexOfFirst { it.first == t } }, Modifier.weight(1f).fillMaxWidth()) { t ->
+        val paneModifier = if (compact) Modifier.height(420.dp).fillMaxWidth() else Modifier.weight(1f).fillMaxWidth()
+        PageSwitch(tab, { t -> tabs.indexOfFirst { it.first == t } }, paneModifier) { t ->
             Box(Modifier.fillMaxSize().padding(bottom = 8.dp)) {
                 when (t) {
                     "tasks" -> ProgressPane()
@@ -130,15 +167,41 @@ fun RunScreen(snackbar: SnackbarHostState, openSettings: () -> Unit, openKeepAli
             }
         }
     }
+    }
+}
+
+/** Desktop BasicParams: which courses will run, and 识别课程. */
+@Composable
+private fun CourseRow(snackbar: SnackbarHostState) {
+    val ctx = LocalContext.current
+    val c = X.colors
+    val scope = rememberCoroutineScope()
+    val names = Courses.selectedNames()
+    val ids = SettingsModel.values["common.course_list"].orEmpty()
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.surface)
+        .border(1.dp, c.border, RoundedCornerShape(Dimens.radius)).padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("课程", color = c.muted, fontSize = 11.sp)
+            Text(when {
+                names.isNotEmpty() -> names.joinToString("、")
+                ids.isNotBlank() -> "课程 ID $ids"
+                else -> "开始运行时选择"
+            }, color = c.text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        XButton(if (Courses.state == "running") "识别中…" else "识别课程", {
+            scope.launch { Courses.detect(ctx)?.let { if (Courses.state == "error") snackbar.showSnackbar(it) } }
+        }, kind = Kind.Ghost, enabled = Courses.state != "running" && !RunState.running)
+    }
 }
 
 @Composable
 private fun Stats() {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(RunState.running) {
+    LaunchedEffect(RunState.running, RunState.paused) {
         while (RunState.running) { now = System.currentTimeMillis(); delay(1000) }
     }
-    val elapsed = if (RunState.running && RunState.startedAt > 0) (now - RunState.startedAt) / 1000 else 0
+    val elapsed = RunState.elapsedSeconds(now)  // paused time not counted, as on the desktop
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatTile("当前课程", RunState.course, Modifier.weight(1f), appearDelay = 0)
@@ -198,29 +261,60 @@ private fun VideoPane() {
         Empty(if (RunState.running) "等待视频任务…" else "运行后在这里显示当前视频（静音）")
         return
     }
+    val rate = 1.0  // 倍速已失效：任务和预览都按 1 倍速
+    var web by remember { mutableStateOf<WebView?>(null) }
+    // Desktop VideoView: start where the task is, play at the task speed, re-sync when it drifts.
+    LaunchedEffect(source, web) {
+        val view = web ?: return@LaunchedEffect
+        while (true) {
+            delay(3000)
+            val pos = RunState.videoPosition()
+            if (pos >= 0 && !RunState.paused) {
+                view.evaluateJavascript(
+                    "(function(){var v=document.querySelector('video');if(!v)return;v.playbackRate=$rate;" +
+                        "if(Math.abs(v.currentTime-$pos)>3)v.currentTime=$pos;if(v.paused)v.play();})()", null)
+            } else if (RunState.paused) {
+                view.evaluateJavascript("(function(){var v=document.querySelector('video');if(v)v.pause();})()", null)
+            }
+        }
+    }
     XCard(Modifier.fillMaxWidth(), title = RunState.videoTitle.ifEmpty { "学习通视频" }, subtitle = "静音预览，不可操作") {
         // The page's base URL makes WebView send a 学习通 Referer, which the video CDN requires.
         AndroidView(
             modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(Dimens.radius)).background(Color.Black),
             factory = { ctx ->
-                WebView(ctx).apply {
-                    settings.javaScriptEnabled = true
-                    settings.mediaPlaybackRequiresUserGesture = false
-                    setBackgroundColor(android.graphics.Color.BLACK)
+                // Fallback: some ROMs ship without a working WebView; the run is unaffected.
+                runCatching {
+                    WebView(ctx).apply {
+                        settings.javaScriptEnabled = true
+                        settings.mediaPlaybackRequiresUserGesture = false
+                        setBackgroundColor(android.graphics.Color.BLACK)
+                    }.also { web = it }
+                }.getOrElse {
+                    android.widget.TextView(ctx).apply {
+                        text = "此手机的系统 WebView 不可用，无法预览视频（不影响任务运行）"
+                        setTextColor(android.graphics.Color.WHITE)
+                        gravity = android.view.Gravity.CENTER
+                    }
                 }
             },
             update = { view ->
-                if (view.tag != source) {
+                if (view is WebView && view.tag != source) {
                     view.tag = source
+                    val start = RunState.videoPosition().coerceAtLeast(0.0)
                     val html = """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
                         <style>html,body{margin:0;height:100%;background:#000}video{width:100%;height:100%;object-fit:contain;pointer-events:none}</style>
-                        </head><body><video src="${attr(source)}" autoplay muted playsinline loop></video></body></html>"""
+                        </head><body><video src="${attr(source)}#t=$start" autoplay muted playsinline></video>
+                        <script>var v=document.querySelector('video');v.playbackRate=$rate;v.addEventListener('loadedmetadata',function(){v.playbackRate=$rate;});</script>
+                        </body></html>"""
                     view.loadDataWithBaseURL("https://mooc1.chaoxing.com/", html, "text/html", "utf-8", null)
                 }
             },
-            onRelease = { it.destroy() },
+            onRelease = { view ->
+                if (view is WebView) { if (web === view) web = null; view.destroy() }
+            },
         )
-        Text("显示当前视频任务的画面，切换任务时自动更新。", color = c.faint, fontSize = 12.sp)
+        Text("与任务进度同步，按设置的倍速播放。", color = c.faint, fontSize = 12.sp)
     }
 }
 
@@ -257,9 +351,12 @@ private fun WorkPane() {
 @Composable
 private fun LogPane() {
     val c = X.colors
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     var filter by rememberSaveable { mutableStateOf("ALL") }
+    var copied by remember { mutableStateOf(false) }
     val shown = RunState.logs.filter {
         when (filter) {
+            "INFO" -> it.level in setOf("INFO", "SUCCESS", "DEBUG")
             "WARNING" -> it.level == "WARNING"
             "ERROR" -> it.level == "ERROR" || it.level == "CRITICAL"
             else -> true
@@ -267,8 +364,18 @@ private fun LogPane() {
     }
     val list = rememberLazyListState()
     LaunchedEffect(shown.size) { if (shown.isNotEmpty()) list.animateScrollToItem(shown.size - 1) }
+    LaunchedEffect(copied) { if (copied) { delay(1500); copied = false } }
     XCard(Modifier.fillMaxSize(), padding = 12.dp) {
-        Segmented(listOf("ALL" to "全部", "WARNING" to "警告", "ERROR" to "错误"), filter, { filter = it }, Modifier.fillMaxWidth())
+        Segmented(listOf("ALL" to "全部", "INFO" to "信息", "WARNING" to "警告", "ERROR" to "错误"), filter, { filter = it },
+            Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            XButton(if (copied) "已复制" else "复制", {
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(
+                    shown.joinToString("\n") { (if (it.time.isNotEmpty()) it.time + " " else "") + "[${it.level}] " + it.message }))
+                copied = true
+            }, Modifier.weight(1f), enabled = shown.isNotEmpty())
+            XButton("清空", { RunState.logs.clear() }, Modifier.weight(1f), enabled = RunState.logs.isNotEmpty())
+        }
         if (shown.isEmpty()) { Empty("暂无日志"); return@XCard }
         LazyColumn(state = list, modifier = Modifier.fillMaxSize()) {
             items(shown) { line ->

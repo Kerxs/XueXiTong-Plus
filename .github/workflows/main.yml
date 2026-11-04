@@ -1,46 +1,52 @@
 name: CI
 
+# Checks for every push and pull request (P7). Nothing here signs or publishes a release:
+# release builds are made locally (build_windows.ps1, gradlew assembleRelease with the
+# release key, which is never stored in the repository).
 on:
   push:
-
-  # Allows you to run this workflow manually from the Actions tab
+  pull_request:
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            architecture: 'x64'
-            name: 'win64'
-
+  tests:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-          architecture: ${{matrix.architecture}}
-
-      - name: Install requirements
+      - name: Install dependencies
         run: |
-          pip install -r requirements.txt
-          pip install pyinstaller
+          python -m pip install --upgrade pip
+          pip install -r requirements-desktop.txt PySide6-Essentials PySide6-Addons
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
 
-      - name: Build win bin
-        run: pyinstaller -F main.py -n 'chaoxing' --add-data "resource;resource" --hidden-import=chardet
-
-      - name: Create release package
+  android:
+    name: Android build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      # Chaquopy needs a build Python of the same version as the app's (3.13).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: android-actions/setup-android@v3
+      - name: Build debug APK
+        working-directory: android
         run: |
-          mkdir release
-          copy dist\chaoxing.exe release\
-          copy config_template.ini release\
-          cd release
-          7z a -tzip chaoxing.zip *
-
+          chmod +x gradlew
+          ./gradlew assembleDebug -Pxxtplus.buildPython=$(which python3.13 || which python)
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
-          path: 'release/chaoxing.zip'
+          name: android-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 7

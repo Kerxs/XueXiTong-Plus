@@ -29,7 +29,7 @@ object PythonBridge {
         val module = Python.getInstance().getModule(MODULE)
         if (!ready) {
             copyAssets(app)
-            module.callAttr("setup", app.filesDir.absolutePath)
+            module.callAttr("setup", app.filesDir.absolutePath, dataDir(app).absolutePath)
             ready = true
         }
         return module
@@ -60,6 +60,21 @@ object PythonBridge {
     fun setupProblem(ctx: Context, valuesJson: String): String =
         module(ctx).callAttr("setup_problem", valuesJson).toString()
 
+    fun guideProblem(ctx: Context, valuesJson: String): String =
+        module(ctx).callAttr("guide_problem", valuesJson).toString()
+
     fun listModels(ctx: Context, endpoint: String, key: String, proxy: String): String =
         module(ctx).callAttr("list_models", endpoint, key, proxy).toString()
+
+    /** 识别课程: logs in with the saved account; slow (network), call off the main thread. */
+    fun listCourses(ctx: Context): String = module(ctx).callAttr("list_courses", configFile(ctx).absolutePath).toString()
+
+    fun dataStats(ctx: Context): String = module(ctx).callAttr("data_stats").toString()
+    fun clearLogs(ctx: Context): Int = module(ctx).callAttr("clear_logs").toInt()
+    fun clearAccountData(ctx: Context) { module(ctx).callAttr("clear_account_data", configFile(ctx).absolutePath) }
+    fun resetConfig(ctx: Context) {
+        module(ctx).callAttr("reset_config", configFile(ctx).absolutePath, templateFile(ctx).absolutePath)
+    }
+
+    fun cookiesFile(ctx: Context) = java.io.File(dataDir(ctx), "cookies.txt")
 }

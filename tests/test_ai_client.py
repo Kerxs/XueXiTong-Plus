@@ -22,6 +22,13 @@ class AIClientTest(unittest.TestCase):
         client = ai._make_client()
         self.assertEqual(client.api_key, "no-key")
 
+    def test_client_has_bounded_timeout_and_retries(self):
+        client = make()._make_client()
+        self.assertEqual(client.max_retries, 2)
+        timeout = client.timeout
+        seconds = timeout if isinstance(timeout, (int, float)) else timeout.read
+        self.assertLessEqual(seconds, 120)
+
     def test_remote_endpoint_needs_key(self):
         with self.assertRaisesRegex(ValueError, "API Key"):
             make(key="")._make_client()

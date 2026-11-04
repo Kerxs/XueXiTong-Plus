@@ -29,6 +29,23 @@ object RunState {
     var running by mutableStateOf(false)
     var paused by mutableStateOf(false)
     var startedAt by mutableLongStateOf(0L)
+    /** Run time without pauses, as of [activeAt] (from the service). */
+    var activeMs by mutableLongStateOf(0L)
+    var activeAt by mutableLongStateOf(0L)
+    /** How the last run ended: "" (none yet) | done | stopped | error — like the desktop status. */
+    var lastResult by mutableStateOf("")
+
+    fun elapsedSeconds(now: Long): Long =
+        if (!running) 0 else (activeMs + if (paused) 0 else (now - activeAt).coerceAtLeast(0)) / 1000
+
+    /** Position of the previewed video in the task, seconds (-1 unknown): the preview starts there. */
+    fun videoPosition(): Double {
+        val p = progress[videoTitle] ?: progress.values.firstOrNull { videoTitle.isNotEmpty() && it.name.contains(videoTitle) }
+            ?: return -1.0
+        val parts = p.done.split(':').mapNotNull { it.toDoubleOrNull() }
+        if (parts.isEmpty()) return -1.0
+        return parts.fold(0.0) { acc, v -> acc * 60 + v }
+    }
     var course by mutableStateOf("")
     var chapter by mutableStateOf("")
     var finishedTasks by mutableIntStateOf(0)
@@ -75,6 +92,16 @@ object RunState {
         }
     }
 
+    /** The :worker process disappeared (killed by the system / a cleaner) without saying so. */
+    fun workerLost() {
+        running = false
+        paused = false
+        prompt = null
+        courses = null
+        lastResult = "error"
+        logs.add(LogLine("ERROR", "任务进程已被系统结束（可能是省电策略或清理后台）。请检查“权限”设置后重新开始运行，学习通会保留已看的进度。", ""))
+    }
+
     fun reset() {
         logs.clear(); progress.clear(); questions.clear()
         course = ""; chapter = ""; finishedTasks = 0
@@ -96,6 +123,11 @@ object RunState {
                 if (running && e.has("startedAt") && e.optLong("startedAt") != startedAt) {
                     reset()  // a new run
                     startedAt = e.optLong("startedAt")
+                }
+                if (running) {
+                    lastResult = ""
+                    activeMs = e.optLong("activeMs")
+                    activeAt = e.optLong("at", System.currentTimeMillis())
                 }
                 if (!running) { prompt = null; courses = null }
             }
@@ -124,6 +156,7 @@ object RunState {
             }
             "finished" -> {
                 val stopped = e.optBoolean("stopped")
+                lastResult = when { stopped -> "stopped"; e.optInt("code") == 0 -> "done"; else -> "error" }
                 addLog(if (stopped || e.optInt("code") == 0) "INFO" else "ERROR",
                     if (stopped) "已停止" else if (e.optInt("code") == 0) "运行结束" else "运行异常结束（代码 ${e.optInt("code")}）", "")
             }
@@ -131,7 +164,10 @@ object RunState {
     }
 
     private fun applyWork(data: JSONObject) {
-        workPhase = data.optString("phase")
+        val phase = data.optString("phase")
+        // A submitted / saved 章节检测 counts as a finished task, like on the desktop.
+        if ((phase == "submitted" || phase == "saved") && workPhase != phase) finishedTasks += 1
+        workPhase = phase
         workTitle = data.optString("title", workTitle)
         workCoverRate = data.optInt("cover_rate", workCoverRate)
         val arr = data.optJSONArray("questions") ?: return

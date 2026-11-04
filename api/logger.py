@@ -9,6 +9,47 @@ tqdm_stream = sys.stderr
 log_buffer = []
 MAX_LOG_BUFFER_SIZE = 1000
 
+# ---- 敏感信息脱敏 ----------------------------------------------------------
+# 配置加载后登记密码、API Key、TOKEN、推送地址等（main.load_config_from_file），
+# 之后所有日志（控制台和 chaoxing.log）以及推送消息里出现时都替换为 ***。
+_secrets: set[str] = set()
+_PLACEHOLDERS = {"xxx", "xxxxxx", "none", "null", "true", "false"}
+
+
+def register_secret(value) -> None:
+    text = str(value or "").strip()
+    if len(text) >= 4 and text.lower() not in _PLACEHOLDERS:
+        _secrets.add(text)
+
+
+def redact(text: str) -> str:
+    if not _secrets or not text:
+        return text
+    for secret in sorted(_secrets, key=len, reverse=True):
+        if secret in text:
+            text = text.replace(secret, "***")
+    return text
+
+
+def _patch(record) -> None:
+    record["message"] = redact(record["message"])
+
+
+def can_enqueue() -> bool:
+    """loguru's enqueue=True needs multiprocessing (named semaphores, sem_open).
+
+    Android (Chaquopy) has no sem_open, so creating the queue fails and importing this
+    module used to crash every run on the phone. Without enqueue the sink is still
+    thread-safe (loguru locks around each write); only the background queue is skipped.
+    """
+    try:
+        import multiprocessing
+
+        multiprocessing.SimpleQueue()
+        return True
+    except Exception:  # ImportError / OSError: [Errno 38] Function not implemented
+        return False
+
 
 def tqdm_sink(msg):
     manual_locked = False
@@ -34,5 +75,6 @@ def tqdm_sink(msg):
 
 
 logger.remove()
-logger.add(tqdm_sink, colorize=True, enqueue=True)
+logger.configure(patcher=_patch)
+logger.add(tqdm_sink, colorize=True, enqueue=can_enqueue())
 logger.add("chaoxing.log", rotation="10 MB", level="TRACE")

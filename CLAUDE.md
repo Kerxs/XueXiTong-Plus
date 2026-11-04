@@ -84,9 +84,20 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\build_windows.ps1
 - 界面偏好（主题、窗口尺寸）保存在 QSettings，不写入 `config.ini`。
 - 变更 API、配置兼容或任务流程前，先保留现有配置键和学习通运行行为；做完变更后运行相关测试并构建桌面包。
 
+## 共用核心（`core/`）与运行稳定性
+
+- `core/`：两端共用、无 Qt / 安卓依赖的业务逻辑。`core/settings.py`（开始前检查 `start_problem`、引导检查 `guide_problem`，提示文字两端一致）、`core/courses.py`（识别课程，worker `--list-courses` 和安卓都调用）、`core/account.py`（清除账号数据、日志文件、日志大小；`ui/winsetup.py` 转调它）。新增共用逻辑放这里，平台代码只做适配。
+- `api/logger.py`：loguru 的 `enqueue=True` 需要 multiprocessing（sem_open），安卓没有，曾导致手机一运行就报错；现在用 `can_enqueue()` 探测。日志脱敏：`main.register_config_secrets` 登记账号、密码、TOKEN、API Key、推送地址，日志和推送消息里替换为 `***`。不要在日志里打印 cookies 值或请求头里的 Cookie / Authorization（`api/base._safe_headers`）。
+- `api/net.py`：网络断开时 `JobProcessor` 等网络恢复再重试该章节，不占用重试次数；章节处理抛异常不再让工作线程退出（以前会导致 `task_queue.join()` 永久卡住）。`SessionManager` 的重试带退避，超时 (10, 20) 秒。登录时没网也会等网络恢复后重试。
+- 视频：倍速已失效，固定 1 倍速（`main.py` 强制；桌面和手机的倍速选项都显示“已失效”）。`Chaoxing.required_watch_ratio` 读取任务点的 `rt`（0.9 / 1），看到要求比例时立即上报，平台确认 `isPassed` 即结束。
+- AI 客户端超时 120 秒、重试 2 次（openai 默认 600 秒）。题库请求携带 TOKEN 时校验 HTTPS 证书；只有自建的 TikuAdapter 不校验。
+- 推送服务 `Local`（本机通知）：`api.notification.set_local_handler` 注册后可用；安卓注册为系统通知，桌面未注册（选项只在手机上出现）。
+
 ## 安卓版（`android/`，开发中）
 
-- Kotlin + Compose + Chaquopy，构建时从仓库根目录复制 `main.py`、`api/*.py`、`ui/output_parser.py`、`ui/advanced.py`、`ui/cloudmodels.py`，所以这些文件里不能引入 Qt 或 Windows 专用依赖。详见 `android/README.md`。
+- Kotlin + Compose + Chaquopy，构建时从仓库根目录复制 `main.py`、`api/*.py`、`core/*.py`、`ui/output_parser.py`、`ui/advanced.py`、`ui/cloudmodels.py`，所以这些文件里不能引入 Qt、Windows 专用依赖或 multiprocessing。详见 `android/README.md`。
+- 手机功能与桌面对齐：设置是二级菜单（`SettingsPages.kt`）、识别课程（`Courses.kt`）、检查更新（`Updater.kt`，.part 下载 + SHA-256 校验后交给系统安装器）、cookies 导入、数据与隐私、关于。引导：欢迎 > 免责声明 > 账号 > 答题来源 > 权限设置（推送不在引导里，手机默认本机通知）。
+- 稳定性：`TaskService` 运行时持有唤醒锁 + Wi-Fi 锁，记录网络断开/恢复；界面每 5 秒检查 `:worker` 进程，被系统杀掉时显示“已退出”。小屏（高度 < 640dp）运行面板整体可滚动。
 - 手机上没有真正的 `openai` 包（pydantic-core / jiter 没有安卓版本），用的是 `android/app/src/main/python/openai` 精简替代。`api/answer.py` 若用到 openai 的新接口或新错误类型，要同步补到替代模块里。
 - 手机只用模型公司的云服务 API：没有本机模型、自定义接口地址和代理（`xxtplus_android.py` 里过滤设置字段）。
 - `tests/test_android_bridge.py` 在桌面 Python 上测试桥接和 openai 替代模块。

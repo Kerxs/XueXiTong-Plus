@@ -34,38 +34,20 @@ def data_dir() -> Path:
     return Path(os.environ.get("APPDATA", Path.home())) / "ChaoxingDesktop"
 
 
-ACCOUNT_FILES = ("cookies.txt", ".cookies.txt")
-LOG_PATTERNS = ("chaoxing*.log", "gui.log")
+from core.account import ACCOUNT_FILES, LOG_PATTERNS  # noqa: E402,F401  (kept for existing imports)
 
 
 def clear_account_data(folder: Path | None = None) -> None:
     """Blank the account, password and cookies login in config.ini and delete cookies files."""
-    import configparser
+    from core import account  # shared with the Android app
 
-    folder = folder or data_dir()
-    config_path = folder / "config.ini"
-    if config_path.exists():
-        config = configparser.ConfigParser(interpolation=None)
-        config.read(config_path, encoding="utf-8")
-        if config.has_section("common"):
-            for key in ("username", "password"):
-                config["common"][key] = ""
-            config["common"]["use_cookies"] = "false"
-            with config_path.open("w", encoding="utf-8") as fh:
-                config.write(fh)
-    for name in ACCOUNT_FILES:
-        try:
-            (folder / name).unlink()
-        except FileNotFoundError:
-            pass
+    account.clear_account_data(folder or data_dir())
 
 
 def log_files(folder: Path | None = None) -> list[Path]:
-    folder = folder or data_dir()
-    found: list[Path] = []
-    for pattern in LOG_PATTERNS:
-        found.extend(p for p in folder.glob(pattern) if p.is_file())
-    return found
+    from core import account
+
+    return account.log_files(folder or data_dir())
 
 
 def clear_ui_settings() -> None:

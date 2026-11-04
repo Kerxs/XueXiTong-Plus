@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import functools
 import json
+import math
 import os
 import random
 import secrets
@@ -18,6 +19,7 @@ import requests
 from loguru import logger
 from requests import RequestException
 from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception
 from tqdm import tqdm
 
@@ -65,6 +67,11 @@ def _work_preview_questions(question_list) -> list[dict]:
     return items
 
 
+def _safe_headers(headers: dict) -> dict:
+    """Request headers for error logs, without credentials (Cookie / Authorization)."""
+    return {k: ("***" if k.lower() in ("cookie", "authorization") else v) for k, v in (headers or {}).items()}
+
+
 def get_timestamp():
     return str(int(time.time() * 1000))
 
@@ -80,9 +87,14 @@ class SessionManager:
 
     def __init__(self):
         self._session = requests.Session()
-        self._session.mount("https://", HTTPAdapter(max_retries=10))
-        self._session.mount("http://", HTTPAdapter(max_retries=10))
-        self._session.request = functools.partial(self._session.request, timeout=5)
+        # Retries with backoff (≈ 1, 2, 4, 8, 16 s) instead of 10 immediate ones, so a short
+        # drop (Wi-Fi switching, a weak mobile signal) is ridden out; idempotent requests only.
+        retry = Retry(total=6, connect=6, read=3, backoff_factor=1.0,
+                      status_forcelist=(502, 503, 504), raise_on_status=False)
+        self._session.mount("https://", HTTPAdapter(max_retries=retry))
+        self._session.mount("http://", HTTPAdapter(max_retries=retry))
+        # (connect, read): mobile networks need more than the old 5 s to connect.
+        self._session.request = functools.partial(self._session.request, timeout=(10, 20))
         # For debug purposes
         # self._session.verify=False
         self._session.headers.clear()
@@ -427,7 +439,8 @@ class Chaoxing:
         if login_with_cookies:
             logger.info("Logging in with cookies")
             SessionManager.update_cookies()
-            logger.debug(f"Logged in with cookies: {SessionManager.get_instance()._session.cookies}")
+            # Only the cookie names: the values are a login session and must not reach chaoxing.log.
+            logger.debug("Logged in with cookies: {}", ", ".join(SessionManager.get_instance()._session.cookies.keys()))
             if not self._validate_cookie_session():
                 logger.warning("Cookie 登录校验失败，尝试使用账号密码重新登录")
                 if self.account and self.account.username and self.account.password:
@@ -792,13 +805,7 @@ class Chaoxing:
                     logger.error(f"验证码通关逻辑异常: {e}")
             return res
 
-        rt = _job['rt']
-        if not rt:
-            rt_search = re.search(r"-rt_([1d])", _job['otherinfo'])
-            if rt_search:
-                rt_char = rt_search.group(1)
-                rt = "0.9" if rt_char == "d" else "1"
-                logger.trace(f"Got rt from otherinfo: {rt}")
+        rt = self._job_rt(_job)
 
         if rt:
             logger.trace(f"Got rt: {rt}")
@@ -839,13 +846,33 @@ class Chaoxing:
             # 若出现两个rt参数都返回403的情况, 则跳过当前任务
             logger.error("出现403报错, 尝试修复无效, 正在跳过当前任务点...")
             logger.error("请求url: {}", resp.url)
-            logger.error("请求头: {}", dict(_session.headers) | headers)
+            logger.error("请求头: {}", _safe_headers(dict(_session.headers) | headers))
             return False, 403
 
         logger.error(f"未知错误: {resp.status_code}")
-        logger.error("请求url:", resp.url)
-        logger.error("请求头：", dict(_session.headers) | headers)
+        logger.error("请求url: {}", resp.url)
+        logger.error("请求头: {}", _safe_headers(dict(_session.headers) | headers))
         return False, resp.status_code
+
+    @staticmethod
+    def _job_rt(job: dict) -> str:
+        """The job's completion ratio as 学习通 states it: "0.9" (90% is enough), "1" (to the end) or ""."""
+        rt = str(job.get("rt") or "").strip()
+        if not rt:
+            rt_search = re.search(r"-rt_([1d])", str(job.get("otherinfo") or ""))
+            if rt_search:
+                rt = "0.9" if rt_search.group(1) == "d" else "1"
+                logger.trace(f"Got rt from otherinfo: {rt}")
+        return rt
+
+    @staticmethod
+    def required_watch_ratio(job: dict) -> float:
+        """Share of the video that completes this task point (1.0 when unknown)."""
+        try:
+            ratio = float(Chaoxing._job_rt(job) or 1)
+        except ValueError:
+            return 1.0
+        return ratio if 0.5 <= ratio <= 1.0 else 1.0
 
     @staticmethod
     def _parse_video_progress_response(response: requests.Response, job: dict) -> tuple[bool, int]:
@@ -982,6 +1009,12 @@ class Chaoxing:
         wait_time = int(random.uniform(30, 90))
 
         logger.info(f"开始任务: {_job['name']}, 总时长: {duration}s, 已进行: {play_time}s")
+        # 有些视频看到一定比例（常见 90%）就算完成：到达时立刻上报，平台确认后结束，不必看完
+        required_ratio = self.required_watch_ratio(_job)
+        required_time = math.ceil(duration * required_ratio) if required_ratio < 1.0 else duration
+        threshold_reported = play_time >= required_time
+        if required_ratio < 1.0:
+            logger.info(f"该视频观看到 {required_ratio:.0%} 即可完成（约 {required_time}s），到达后平台确认即结束")
 
         forbidden_retry = 0
         max_forbidden_retry = 2
@@ -1003,8 +1036,12 @@ class Chaoxing:
         pbar = None
         try:
             while not passed:
+                # Report right when the required share is reached (not up to 90 s later)
+                reached_required = not threshold_reported and play_time >= required_time
+                if reached_required:
+                    threshold_reported = True
                 # Sometimes the last request needs to be sent several times to complete the task
-                if play_time - last_log_time >= wait_time or play_time == duration:
+                if play_time - last_log_time >= wait_time or play_time == duration or reached_required:
 
                     passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration,
                                                             int(play_time), _type, headers=headers)

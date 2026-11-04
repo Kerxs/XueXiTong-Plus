@@ -513,12 +513,9 @@ class AppController(QObject):
     dataStatsChanged = Signal()
 
     def _log_size_text(self) -> str:
-        from ui import winsetup
+        from core import account
 
-        total = sum(p.stat().st_size for p in winsetup.log_files(DATA_DIR))
-        if total < 1024 * 1024:
-            return f"{total / 1024:.0f} KB"
-        return f"{total / 1024 / 1024:.1f} MB"
+        return account.log_size_text(DATA_DIR)
 
     logSize = Property(str, _log_size_text, notify=dataStatsChanged)
     hasCookiesFile = Property(bool, lambda self: (DATA_DIR / "cookies.txt").exists(), notify=dataStatsChanged)
@@ -808,11 +805,16 @@ class AppController(QObject):
     def startRun(self) -> None:
         if self._process is not None:
             return
+        from core import settings as core_settings  # same checks and wording as the Android app
+
         v = self._values
-        if not v["use_cookies"] and (not v["username"].strip() or not v["password"]):
-            self.toast.emit("请在设置中填写账号和密码，或开启 cookies 登录。", "warning")
+        values = {**self._advanced, "common.username": v["username"], "common.password": v["password"],
+                  "common.use_cookies": "true" if v["use_cookies"] else "false"}
+        problem = core_settings.account_problem(values)
+        if problem:
+            self.toast.emit(problem + "。", "warning")
             return
-        problem = advanced.ai_config_problem(self._advanced)
+        problem = core_settings.start_problem(values)
         if problem:
             self.toast.emit(problem + "（设置 → 高级选项 → 答题来源）", "warning")
             return
@@ -995,10 +997,7 @@ class AppController(QObject):
         self.videoChanged.emit()
 
     def _video_rate(self) -> float:
-        try:
-            return float(self._values.get("speed", "1"))
-        except (TypeError, ValueError):
-            return 1.0
+        return 1.0  # 倍速已失效：任务和预览都按 1 倍速
 
     @Slot(result=str)
     def videoPageAtPosition(self) -> str:

@@ -26,33 +26,14 @@ def list_courses(config_path: Path, data_dir: Path) -> int:
     """
     import json
 
-    def emit(payload: dict) -> None:
-        print(COURSES_PREFIX + json.dumps(payload, ensure_ascii=False), flush=True)
-
     data_dir.mkdir(parents=True, exist_ok=True)
     os.chdir(data_dir)
-    from main import load_config_from_file
-    from api.base import Account, Chaoxing
+    from core.courses import list_courses as read_courses  # shared with the Android app
 
-    common, _tiku, _notify = load_config_from_file(str(config_path))
-    use_cookies = bool(common.get("use_cookies", False))
-    username, password = common.get("username", ""), common.get("password", "")
-    if not use_cookies and (not username or not password or username.lower() == "xxx"):
-        emit({"ok": False, "error": "还没有填写账号和密码"})
-        return 3
-    try:
-        chaoxing = Chaoxing(account=Account(username, password))
-        state = chaoxing.login(login_with_cookies=use_cookies)
-        if not state.get("status"):
-            emit({"ok": False, "error": f"登录失败：{state.get('msg') or '未知原因'}"})
-            return 1
-        courses = chaoxing.get_course_list()
-    except Exception as exc:  # network / parsing problems are reported, not raised
-        emit({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
-        return 1
-    keys = ("courseId", "clazzId", "title", "teacher", "desc")
-    emit({"ok": True, "courses": [{k: str(c.get(k, "") or "") for k in keys} for c in courses]})
-    return 0
+    payload = read_courses(config_path)
+    code = 0 if payload.get("ok") else int(payload.pop("code", 1))
+    print(COURSES_PREFIX + json.dumps(payload, ensure_ascii=False), flush=True)
+    return code
 
 
 def run_worker(argv: list[str]) -> int:

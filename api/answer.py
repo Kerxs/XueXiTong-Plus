@@ -687,7 +687,8 @@ class TikuYanxi(Tiku):
                 # 'type':q_info['type'], #修复478题目类型与答案类型不符（不想写后处理了）
                 # 没用，就算有type和options，言溪题库还是可能返回类型不符，问了客服，type仅用于收集
             },
-            verify=False
+            # TOKEN 随请求发送：校验 HTTPS 证书（tk.enncy.cn 证书有效）
+            timeout=30,
         )
         if res.status_code == 200:
             res_json = res.json()
@@ -998,8 +999,7 @@ class TikuLike(Tiku):
             res = requests.post(
                 self.query_api,
                 json=request_data,
-                headers=temp_headers,
-                verify=False,
+                headers=temp_headers,  # Bearer TOKEN：校验 HTTPS 证书
                 timeout=self._timeout  # 添加超时设置
             )
         except requests.exceptions.Timeout:
@@ -1148,8 +1148,7 @@ class TikuLike(Tiku):
         try:
             res = requests.get(
                 self.balance_api,
-                headers=temp_headers,
-                verify=False,
+                headers=temp_headers,  # Bearer TOKEN：校验 HTTPS 证书
                 timeout=self._timeout
             )
             if res.status_code == 200:
@@ -1247,7 +1246,9 @@ class TikuAdapter(Tiku):
                 'options': [sub(r'^[A-Za-z]\.?、?\s?', '', option) for option in options.split('\n')],
                 'type': type
             },
-            verify=False
+            # 自建的 TikuAdapter 常用自签名证书或 http，且不携带任何密钥，所以不校验证书
+            verify=False,
+            timeout=30,
         )
         if res.status_code == 200:
             res_json = res.json()
@@ -1336,12 +1337,14 @@ class AI(Tiku):
             if not local:
                 raise ValueError('未填写 API Key（设置 → 高级选项 → 答题来源）')
             key = 'no-key'
+        # 默认超时是 600 秒：模型服务卡住时一道题会等 10 分钟。改为 120 秒、失败重试 2 次。
+        limits = {'timeout': 120.0, 'max_retries': 2}
         if self.http_proxy and not local:
-            return OpenAI(http_client=httpx.Client(proxy=self.http_proxy), base_url=self.endpoint, api_key=key)
+            return OpenAI(http_client=httpx.Client(proxy=self.http_proxy), base_url=self.endpoint, api_key=key, **limits)
         if self.http_proxy and not getattr(self, '_proxy_note_shown', False):
             self._proxy_note_shown = True
             logger.info(f'{self.name}: 接口地址在本机，已忽略代理设置 {self.http_proxy}')
-        return OpenAI(base_url=self.endpoint, api_key=key)
+        return OpenAI(base_url=self.endpoint, api_key=key, **limits)
 
     def _explain_error(self, e: Exception) -> str:
         """Plain-language reason for a failed request, with the original message."""

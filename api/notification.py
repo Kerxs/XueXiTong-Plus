@@ -86,7 +86,10 @@ class NotificationService(ABC):
             message: 要发送的消息内容
         """
         if not self.disabled:
-            self._send(message)
+            # Error reports carry tracebacks: keep account / keys out of the pushed text too.
+            from api.logger import redact
+
+            self._send(redact(message))
 
 
 class NotificationFactory:
@@ -162,6 +165,36 @@ class DefaultNotification(NotificationService):
             self.disabled = True
             logger.info("未找到外部通知配置，已忽略外部通知功能")
             return self
+
+
+_local_handler = None
+
+
+def set_local_handler(handler) -> None:
+    """Register how the host app shows a notification itself (the Android app: a system notification)."""
+    global _local_handler
+    _local_handler = handler
+
+
+class Local(NotificationService):
+    """
+    本机通知：交给运行本程序的应用显示（安卓版用系统通知栏），不经过第三方推送服务
+    """
+
+    def _init_service(self) -> None:
+        if _local_handler is None:
+            self.disabled = True
+            logger.info("当前平台不支持本机通知，已忽略通知功能")
+
+    def init_notification(self) -> None:
+        # No address or key to configure: only needs a registered handler.
+        self._init_service()
+
+    def _send(self, message: str) -> None:
+        try:
+            _local_handler(message)
+        except Exception as e:  # a notification must never stop the run
+            logger.error(f"本机通知发送失败: {e}")
 
 
 class ServerChan(NotificationService):

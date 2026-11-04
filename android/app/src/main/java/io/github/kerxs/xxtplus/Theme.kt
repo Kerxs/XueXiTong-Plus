@@ -95,16 +95,23 @@ object X {
 object UiPrefs {
     var theme by mutableStateOf("system")
     var motion by mutableStateOf(true)
+    var splash by mutableStateOf(true)          // 启动动画
+    var alertOnFinish by mutableStateOf(true)   // 运行结束提醒
+    var autoUpdate by mutableStateOf(true)      // 启动时检查更新
 
     fun load(ctx: Context) {
         val p = ctx.getSharedPreferences("app", Context.MODE_PRIVATE)
         theme = p.getString("theme", "system") ?: "system"
         motion = p.getBoolean("motion", true)
+        splash = p.getBoolean("splash", true)
+        alertOnFinish = p.getBoolean("alertOnFinish", true)
+        autoUpdate = p.getBoolean("autoUpdate", true)
     }
 
     fun save(ctx: Context) {
         ctx.getSharedPreferences("app", Context.MODE_PRIVATE).edit()
-            .putString("theme", theme).putBoolean("motion", motion).apply()
+            .putString("theme", theme).putBoolean("motion", motion).putBoolean("splash", splash)
+            .putBoolean("alertOnFinish", alertOnFinish).putBoolean("autoUpdate", autoUpdate).apply()
     }
 }
 
