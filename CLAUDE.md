@@ -83,3 +83,10 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\build_windows.ps1
 - 修改打包相关内容时，检查 `ui/qml` 资源、Qt WebView 插件、图标资源和 worker 是否都进入发行目录。
 - 界面偏好（主题、窗口尺寸）保存在 QSettings，不写入 `config.ini`。
 - 变更 API、配置兼容或任务流程前，先保留现有配置键和学习通运行行为；做完变更后运行相关测试并构建桌面包。
+
+## 安卓版（`android/`，开发中）
+
+- Kotlin + Compose + Chaquopy，构建时从仓库根目录复制 `main.py`、`api/*.py`、`ui/output_parser.py`、`ui/advanced.py`、`ui/cloudmodels.py`，所以这些文件里不能引入 Qt 或 Windows 专用依赖。详见 `android/README.md`。
+- 手机上没有真正的 `openai` 包（pydantic-core / jiter 没有安卓版本），用的是 `android/app/src/main/python/openai` 精简替代。`api/answer.py` 若用到 openai 的新接口或新错误类型，要同步补到替代模块里。
+- 手机只用模型公司的云服务 API：没有本机模型、自定义接口地址和代理（`xxtplus_android.py` 里过滤设置字段）。
+- `tests/test_android_bridge.py` 在桌面 Python 上测试桥接和 openai 替代模块。

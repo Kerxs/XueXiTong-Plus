@@ -1,0 +1,272 @@
+package io.github.kerxs.xxtplus
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.PowerManager
+import android.os.Process
+import org.json.JSONObject
+import java.util.ArrayDeque
+
+/**
+ * Foreground service in the :worker process that runs the shared Python task code.
+ *
+ * Keeps the task alive with the screen off: a foreground notification (暂停/继续, 停止) and a
+ * partial wake lock held only while running. Events go to the UI process as package-private
+ * broadcasts; the last few hundred are kept so a reopened UI can catch up (ACTION_SYNC).
+ * 停止 kills this process, like the desktop app kills its worker.
+ */
+class TaskService : Service() {
+
+    companion object {
+        const val ACTION_START = "io.github.kerxs.xxtplus.START"
+        const val ACTION_PAUSE = "io.github.kerxs.xxtplus.PAUSE"
+        const val ACTION_RESUME = "io.github.kerxs.xxtplus.RESUME"
+        const val ACTION_STOP = "io.github.kerxs.xxtplus.STOP"
+        const val ACTION_ANSWER = "io.github.kerxs.xxtplus.ANSWER"
+        const val ACTION_SYNC = "io.github.kerxs.xxtplus.SYNC"
+        const val ACTION_EVENT = "io.github.kerxs.xxtplus.EVENT"
+        const val EXTRA_TEXT = "text"
+        const val EXTRA_JSON = "json"
+        const val EXTRA_SNAPSHOT = "snapshot"
+
+        const val CHANNEL_TASK = "task"
+        const val CHANNEL_ALERT = "alert"
+        private const val NOTIFY_TASK = 1
+        private const val NOTIFY_ALERT = 2
+        private const val HISTORY = 400
+
+        fun send(ctx: Context, action: String, text: String? = null) {
+            val intent = Intent(ctx, TaskService::class.java).setAction(action)
+            if (text != null) intent.putExtra(EXTRA_TEXT, text)
+            if (action == ACTION_START) ctx.startForegroundService(intent) else ctx.startService(intent)
+        }
+
+        fun createChannels(ctx: Context) {
+            val nm = ctx.getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(NotificationChannel(
+                CHANNEL_TASK, ctx.getString(R.string.channel_task), NotificationManager.IMPORTANCE_LOW,
+            ).apply { description = ctx.getString(R.string.channel_task_desc); setShowBadge(false) })
+            nm.createNotificationChannel(NotificationChannel(
+                CHANNEL_ALERT, ctx.getString(R.string.channel_alert), NotificationManager.IMPORTANCE_HIGH,
+            ).apply { description = ctx.getString(R.string.channel_alert_desc) })
+        }
+    }
+
+    private val main = Handler(Looper.getMainLooper())
+    private val history = ArrayDeque<String>()
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var worker: Thread? = null
+    private var paused = false
+    private var course = ""
+    private var chapter = ""
+    private var progress = ""
+    private var lastNotify = 0L
+    private var startedAt = 0L
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        createChannels(this)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START -> start()
+            ACTION_PAUSE -> setPaused(true)
+            ACTION_RESUME -> setPaused(false)
+            ACTION_STOP -> finish(stopped = true, code = 0)
+            ACTION_ANSWER -> answer(intent.getStringExtra(EXTRA_TEXT) ?: "")
+            ACTION_SYNC -> sync()
+        }
+        // Not restarted by the system after being killed: the user starts the run again
+        // (the platform keeps the watch progress, so it continues where it was).
+        return START_NOT_STICKY
+    }
+
+    private fun start() {
+        startForegroundCompat(buildNotification())
+        if (worker != null) return
+        PythonBridge.pauseFile(this).delete()
+        paused = false
+        startedAt = System.currentTimeMillis()
+        val pm = getSystemService(PowerManager::class.java)
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "xxtplus:task").apply {
+            setReferenceCounted(false)
+            acquire(24 * 60 * 60 * 1000L)
+        }
+        record(JSONObject().put("type", "state").put("running", true).put("paused", false)
+            .put("startedAt", startedAt).toString())
+        val sink = Sink()
+        worker = Thread({
+            val code = try {
+                PythonBridge.module(this).callAttr(
+                    "run",
+                    PythonBridge.configFile(this).absolutePath,
+                    PythonBridge.dataDir(this).absolutePath,
+                    PythonBridge.pauseFile(this).absolutePath,
+                    sink,
+                ).toInt()
+            } catch (t: Throwable) {
+                sink.emit(JSONObject().put("type", "log").put("level", "ERROR")
+                    .put("message", "运行组件出错：${t.message}").put("time", "").toString())
+                1
+            }
+            main.post { finish(stopped = false, code = code) }
+        }, "xxtplus-task").apply { isDaemon = true; start() }
+    }
+
+    /** Called from Python (any thread) with one parsed output event as JSON. */
+    inner class Sink {
+        fun emit(json: String) {
+            main.post { onEvent(json) }
+        }
+    }
+
+    private fun onEvent(json: String) {
+        record(json)
+        val event = runCatching { JSONObject(json) }.getOrNull() ?: return
+        when (event.optString("type")) {
+            "activity" -> when (event.optString("kind")) {
+                "course" -> course = event.optString("value")
+                "chapter" -> chapter = event.optString("value")
+            }
+            "progress" -> progress = "${event.optString("name")}  ${event.optInt("percent")}%"
+            "prompt" -> alert("需要你确认", event.optString("text"))
+            "courselist" -> alert("请选择要学习的课程", "打开学习通PLUS选择课程后继续")
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastNotify > 1000) {
+            lastNotify = now
+            notifyTask()
+        }
+    }
+
+    private fun record(json: String) {
+        history.addLast(json)
+        while (history.size > HISTORY) history.removeFirst()
+        sendBroadcast(Intent(ACTION_EVENT).setPackage(packageName).putExtra(EXTRA_JSON, json))
+    }
+
+    private fun sync() {
+        if (worker == null) {
+            // Started only to answer SYNC: nothing is running here.
+            sendBroadcast(Intent(ACTION_EVENT).setPackage(packageName).putExtra(EXTRA_JSON,
+                JSONObject().put("type", "state").put("running", false).put("paused", false).toString()))
+            stopSelf()
+            return
+        }
+        val state = JSONObject().put("type", "state").put("running", true).put("paused", paused)
+            .put("startedAt", startedAt).toString()
+        sendBroadcast(Intent(ACTION_EVENT).setPackage(packageName)
+            .putStringArrayListExtra(EXTRA_SNAPSHOT, ArrayList(history + state)))
+    }
+
+    private fun answer(text: String) {
+        if (worker == null) return
+        PythonBridge.module(this).callAttr("answer", text)
+        getSystemService(NotificationManager::class.java).cancel(NOTIFY_ALERT)
+    }
+
+    private fun setPaused(value: Boolean) {
+        if (worker == null) return
+        val flag = PythonBridge.pauseFile(this)
+        if (value) flag.writeText("paused") else flag.delete()
+        paused = value
+        // The wake lock is kept while paused: a paused run is resumed from the notification
+        // and should continue at once; it is released on stop / end.
+        record(JSONObject().put("type", "state").put("running", true).put("paused", paused)
+            .put("startedAt", startedAt).toString())
+        notifyTask()
+    }
+
+    private fun finish(stopped: Boolean, code: Int) {
+        PythonBridge.pauseFile(this).delete()
+        val was = worker != null
+        worker = null
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+        record(JSONObject().put("type", "finished").put("stopped", stopped).put("code", code).toString())
+        record(JSONObject().put("type", "state").put("running", false).put("paused", false).toString())
+        if (was && !stopped) {
+            alert(if (code == 0) "任务已结束" else "任务异常结束", if (code == 0) "所有课程任务已处理完" else "打开应用查看日志")
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        // Python threads cannot be interrupted; end the process like the desktop app ends its worker.
+        if (was) main.postDelayed({ Process.killProcess(Process.myPid()) }, 500)
+    }
+
+    private fun startForegroundCompat(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFY_TASK, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFY_TASK, notification)
+        }
+    }
+
+    private fun notifyTask() {
+        if (worker == null) return
+        getSystemService(NotificationManager::class.java).notify(NOTIFY_TASK, buildNotification())
+    }
+
+    private fun servicePending(action: String, code: Int) = PendingIntent.getService(
+        this, code, Intent(this, TaskService::class.java).setAction(action),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    private fun openApp() = PendingIntent.getActivity(
+        this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    private fun buildNotification(): Notification {
+        val title = when {
+            paused -> "已暂停"
+            course.isNotEmpty() -> "正在学习：$course"
+            else -> "正在运行"
+        }
+        val text = listOf(chapter, progress).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { "正在登录和读取课程…" }
+        val toggle = if (paused) {
+            Notification.Action.Builder(null, "继续", servicePending(ACTION_RESUME, 2)).build()
+        } else {
+            Notification.Action.Builder(null, "暂停", servicePending(ACTION_PAUSE, 1)).build()
+        }
+        return Notification.Builder(this, CHANNEL_TASK)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(openApp())
+            .addAction(toggle)
+            .addAction(Notification.Action.Builder(null, "停止", servicePending(ACTION_STOP, 3)).build())
+            .build()
+    }
+
+    private fun alert(title: String, text: String) {
+        val n = Notification.Builder(this, CHANNEL_ALERT)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setAutoCancel(true)
+            .setContentIntent(openApp())
+            .build()
+        getSystemService(NotificationManager::class.java).notify(NOTIFY_ALERT, n)
+    }
+
+    override fun onDestroy() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+        super.onDestroy()
+    }
+}
