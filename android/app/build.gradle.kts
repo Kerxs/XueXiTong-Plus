@@ -33,16 +33,31 @@ android {
         applicationId = "io.github.kerxs.xxtplus"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 10201
+        versionName = "1.2.1"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    // Release key: never in the repository. Set xxtplus.storeFile / storePassword / keyAlias /
+    // keyPassword in %USERPROFILE%\.gradle\gradle.properties. Every update must be signed with the
+    // same key, or phones refuse to install it over the previous version.
+    val releaseStore = providers.gradleProperty("xxtplus.storeFile").orNull
+    signingConfigs {
+        if (releaseStore != null) {
+            create("release") {
+                storeFile = file(releaseStore)
+                storePassword = providers.gradleProperty("xxtplus.storePassword").get()
+                keyAlias = providers.gradleProperty("xxtplus.keyAlias").get()
+                keyPassword = providers.gradleProperty("xxtplus.keyPassword").get()
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Sideloaded test builds: sign with the debug key until a release key exists.
-            signingConfig = signingConfigs.getByName("debug")
+            // Without the release key (e.g. on another machine) fall back to the debug key.
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 

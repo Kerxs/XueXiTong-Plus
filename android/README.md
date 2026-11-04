@@ -36,7 +36,11 @@ $env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17.0.21.9-hotspot"
 
 `local.properties` 写 `sdk.dir`（不提交）。Android Studio 也要从联接路径打开。
 
-APK 在 `app/build/outputs/apk/debug/`。release 构建暂时用 debug 签名，只用于侧载测试。
+APK 在 `app/build/outputs/apk/debug/`。发布用 `.\gradlew.bat assembleRelease`，输出 `app/build/outputs/apk/release/app-release.apk`。
+
+**发布签名**：密钥不在仓库里，在 `%USERPROFILE%\.gradle\gradle.properties` 中设置 `xxtplus.storeFile`、`xxtplus.storePassword`、`xxtplus.keyAlias`、`xxtplus.keyPassword`。以后每个版本都必须用同一个密钥签名，否则手机无法覆盖安装（只能卸载重装，数据丢失）——请备份密钥文件和密码。没有这些设置时 release 构建退回 debug 签名。
+
+版本号与桌面版同步：`versionName` 与 `ui/controller.py` 的 `APP_VERSION` 一致，`versionCode` = 主×10000 + 次×100 + 修订（1.2.1 → 10201）。
 
 ## 待验证
 
