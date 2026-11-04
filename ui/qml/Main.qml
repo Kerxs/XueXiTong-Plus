@@ -178,6 +178,82 @@ ApplicationWindow {
     ResizeEdge { z: 60; edges: Qt.LeftEdge | Qt.BottomEdge; cursorShape: Qt.SizeBDiagCursor; x: 0; y: parent.height - grip; width: grip; height: grip }
     ResizeEdge { z: 60; edges: Qt.RightEdge | Qt.BottomEdge; cursorShape: Qt.SizeFDiagCursor; x: parent.width - grip; y: parent.height - grip; width: grip; height: grip }
 
+    // ---- splash hand-off: the splash logo moves from the screen centre to the nav-pane brand ----
+    // The splash (a separate window) was centred on the screen; this copy of its logo starts at
+    // that same spot inside the main window, so when the splash card dissolves the logo stays
+    // put, then glides and shrinks onto the brand icon in the top-left while its text fades.
+    readonly property bool splashIntro: typeof startup !== "undefined" && startup && startup.splashShown && Theme.motion
+    Item {
+        id: introLogo
+        z: 90
+        visible: window.splashIntro && !introDone
+        property bool introDone: false
+        transformOrigin: Item.TopLeft
+        width: introRow.implicitWidth
+        height: introRow.implicitHeight
+
+        Row {
+            id: introRow
+            spacing: 28
+            Image {
+                source: controller.iconUrl
+                sourceSize.width: 112
+                sourceSize.height: 112
+                width: 112
+                height: 112
+                smooth: true
+                mipmap: true
+            }
+            Text {
+                id: introText
+                anchors.verticalCenter: parent.verticalCenter
+                text: "学习通 PLUS"
+                color: Theme.text
+                font.family: "Microsoft YaHei UI"
+                font.pixelSize: 44
+                font.weight: Font.Black
+            }
+        }
+
+        function start() {
+            // Splash centre (screen centre) in window coordinates; the splash logo sat 12 px above centre.
+            const s = window.screen
+            const cx = (s ? s.virtualX + s.width / 2 : window.x + window.width / 2) - window.x
+            const cy = (s ? s.virtualY + s.height / 2 : window.y + window.height / 2) - window.y - 12
+            const target = brandIcon.mapToItem(window.contentItem, 0, 0)
+            fly.fromX = cx - width / 2
+            fly.fromY = cy - height / 2
+            fly.toX = target.x
+            fly.toY = target.y
+            fly.toScale = brandIcon.width / 112
+            fly.start()
+        }
+
+        ParallelAnimation {
+            id: fly
+            property real fromX: 0
+            property real fromY: 0
+            property real toX: 0
+            property real toY: 0
+            property real toScale: 0.32
+            NumberAnimation { target: introLogo; property: "x"; from: fly.fromX; to: fly.toX; duration: 720; easing.type: Easing.InOutCubic }
+            NumberAnimation { target: introLogo; property: "y"; from: fly.fromY; to: fly.toY; duration: 720; easing.type: Easing.InOutCubic }
+            NumberAnimation { target: introLogo; property: "scale"; from: 1; to: fly.toScale; duration: 720; easing.type: Easing.InOutCubic }
+            SequentialAnimation {
+                PauseAnimation { duration: 160 }
+                NumberAnimation { target: introText; property: "opacity"; from: 1; to: 0; duration: 320; easing.type: Easing.OutCubic }
+            }
+            onFinished: introLogo.introDone = true
+        }
+    }
+    onVisibleChanged: {
+        if (visible && splashIntro && !introLogo.introDone && !fly.running) {
+            // Wait one frame so the layout (and a restored maximised size) has settled.
+            introLogo.x = -10000
+            Qt.callLater(introLogo.start)
+        }
+    }
+
     // Content fades and lifts in when the window first appears after the splash.
     Item {
         id: shell
@@ -211,10 +287,14 @@ ApplicationWindow {
                     spacing: 4
 
                     RowLayout {
+                        id: brandRow
                         spacing: 10
                         Layout.leftMargin: 4
                         Layout.bottomMargin: 22
+                        // Hidden while the splash logo flies in; shown the moment it lands.
+                        opacity: introLogo.visible ? 0 : 1
                         Image {
+                            id: brandIcon
                             source: controller.iconUrl
                             sourceSize.width: 36
                             sourceSize.height: 36

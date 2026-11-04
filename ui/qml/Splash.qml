@@ -158,20 +158,15 @@ Window {
         ScriptAction { script: typer.start() }
     }
 
+    // The main window opens behind the splash with the same logo at the screen centre
+    // (Main.qml), so the card dissolves into it; the logo then moves to the top-left.
+    // Revealing before closing also keeps the app from quitting on "last window closed".
     SequentialAnimation {
         id: outro
-        ParallelAnimation {
-            NumberAnimation { target: card; property: "opacity"; to: 0; duration: 180; easing.type: Easing.InCubic }
-            NumberAnimation { target: card; property: "scale"; to: 1.03; duration: 180; easing.type: Easing.InCubic }
-        }
-        ScriptAction {
-            script: {
-                // Reveal the main window before closing, or the app would quit
-                // on "last window closed".
-                splash.finished()
-                splash.close()
-            }
-        }
+        ScriptAction { script: splash.finished() }
+        PauseAnimation { duration: 60 }
+        NumberAnimation { target: card; property: "opacity"; to: 0; duration: 200; easing.type: Easing.InCubic }
+        ScriptAction { script: splash.close() }
     }
 
     Component.onCompleted: {

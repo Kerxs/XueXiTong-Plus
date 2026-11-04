@@ -47,6 +47,7 @@ class StartupLoader(QObject):
         self._incubator: _Incubator | None = None
         self._splash_done = False
         self._sync_create = False
+        self._splash_shown = False
 
     # ----- properties read by Splash.qml ---------------------------------
     status = Property(str, lambda self: self._status, notify=statusChanged)
@@ -54,6 +55,8 @@ class StartupLoader(QObject):
     loaded = Property(bool, lambda self: self._loaded, notify=loadedChanged)
     appName = Property(str, lambda self: APP_NAME, constant=True)
     iconUrl = Property(QUrl, lambda self: QUrl.fromLocalFile(str(ROOT_DIR / "assets" / "learning_plus.png")), constant=True)
+    # Main.qml flies the splash logo from the screen centre to the nav-pane brand only after a splash.
+    splashShown = Property(bool, lambda self: self._splash_shown, constant=True)
 
     def _step(self, text: str, progress: float) -> None:
         self._status = text
@@ -69,6 +72,7 @@ class StartupLoader(QObject):
             self._sync_create = True
             QTimer.singleShot(0, self._load_config)
             return
+        self._splash_shown = True
         self._engine.load(QUrl.fromLocalFile(str(QML_DIR / "Splash.qml")))
         splash = self._engine.rootObjects()[-1] if self._engine.rootObjects() else None
         if splash is not None:

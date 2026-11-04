@@ -11,7 +11,7 @@
 ## 代码结构
 
 - `gui.py`：入口，创建 QGuiApplication 和 QML 引擎，设置 FluentWinUI3 样式，交给 `ui/startup.py`。
-- `ui/startup.py`：`StartupLoader`。先显示 `Splash.qml`，再在后台依次读取配置、检查运行组件、异步编译 `Main.qml`、异步创建主窗口，并把进度报告给启动画面。启动画面要等打字动画结束且加载完成才关闭，然后显示主窗口。
+- `ui/startup.py`：`StartupLoader`。先显示 `Splash.qml`，再在后台依次读取配置、检查运行组件、异步编译 `Main.qml`、异步创建主窗口，并把进度报告给启动画面。启动画面要等打字动画结束且加载完成才关闭，然后显示主窗口。交接动画：启动画面先让主窗口显示，再淡出卡片；`Main.qml` 的 `introLogo` 在屏幕中心（启动画面原位置）画同样的图标和文字，然后移动、缩小到导航栏左上角的 `brandIcon`（`brandRow` 在此期间隐藏）。只在显示过启动画面（`startup.splashShown`）且开启界面动画时运行。安卓版 `Splash.kt` 做同样的动画。
 - `ui/qml/Onboarding.qml`：首次启动引导（欢迎 > 免责声明 > 账号 > 高级设置 > 开始使用）。高级设置一步直接嵌入 `AdvancedOptions`（`embedded: true` 不显示卡片标题，`stacked: true` 三部分依次排列而不是标签页），缺必填项时（`controller.answerSetupProblem`）不能下一步，可“稍后配置”。免责声明一步要求用户在输入框里完整写一遍声明（忽略空白；声明文字可选中复制，但界面不提示），一致后才能继续。账号一步可以“稍后配置”，之后运行面板顶部会一直显示提醒条，导航“设置”上有闪烁的提醒点，点“开始运行”会直接跳到设置。完成状态存在 QSettings 的 `onboarding/done` 和 `onboarding/version`；**改动引导界面时把 `ui/controller.py` 的 `ONBOARDING_VERSION` 加 1**，所有完成过旧版引导的用户下次启动都会重新看到引导；设置页“关于”里可以重新打开。开发时设置 `CHAOXING_DESKTOP_ONBOARDING=1` 可强制显示。
 - `ui/qml/AppButton.qml`、`AppCheckBox.qml`、`AppSwitch.qml`、`AppTextField.qml`、`BaseDialog.qml`：自绘控件，外观不依赖 Quick Controls 样式（打包版若样式回退也保持一致）。新增按钮/勾选框/开关/对话框请用这些，不要直接用 `Button` / `CheckBox` / `Switch` / `Dialog`。动画时长统一用 `Theme.fast / normal / slow`。
 - `installer/setup.py` + `installer/qml/Setup.qml`：自制安装程序（欢迎 > 许可协议 > 安装选项 > 正在安装 > 完成），复用 `ui/qml` 的控件和 `Theme`。按当前用户安装到 `%LOCALAPPDATA%\Programs\学习通PLUS`，写 `HKCU\...\Uninstall\XueXiTongPlus`，可选桌面和开始菜单快捷方式。发行 zip 直接追加在安装程序 exe 末尾，`zipfile` 从文件尾部找到它；开发时用 `python installer\setup.py --payload dist\XueXiTong-Plus-Windows-<版本>.zip`。`--silent [--dir 路径] [--no-shortcuts]` 静默安装。日志在 `%TEMP%\xxtplus-setup.log`。
@@ -90,3 +90,5 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\build_windows.ps1
 - 手机上没有真正的 `openai` 包（pydantic-core / jiter 没有安卓版本），用的是 `android/app/src/main/python/openai` 精简替代。`api/answer.py` 若用到 openai 的新接口或新错误类型，要同步补到替代模块里。
 - 手机只用模型公司的云服务 API：没有本机模型、自定义接口地址和代理（`xxtplus_android.py` 里过滤设置字段）。
 - `tests/test_android_bridge.py` 在桌面 Python 上测试桥接和 openai 替代模块。
+- 界面与桌面版一致：`Theme.kt` 的颜色、圆角、动画时长和 `ui/qml/Theme.qml` 相同，`Components.kt` 对应 AppButton / Card / StatTile / StatusPill / Segmented / QuestionCard。改桌面版样式时同步改这两个文件。
+- 图标：`assets/render_android_icon.py` 从桌面图标生成启动器图标、应用内品牌图和通知图标；桌面图标改了要重新运行。自适应图标的 PLUS 徽标比桌面版往里移了一些，圆形遮罩下才不会被裁掉。
