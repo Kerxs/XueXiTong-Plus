@@ -37,6 +37,7 @@ ApplicationWindow {
         || (controller.username.trim() !== "" && controller.password !== "")
     readonly property bool overlayOpen: coursePicker.visible || stopConfirm.visible
         || closeConfirm.visible || promptDialog.visible || guide.visible || updateDialog.visible
+        || manualDialog.visible
 
     Component.onCompleted: {
         window.width = Math.max(window.minimumWidth, windowSettings.width)
@@ -181,8 +182,13 @@ ApplicationWindow {
     // ---- splash hand-off: the splash logo moves from the screen centre to the nav-pane brand ----
     // The splash (a separate window) was centred on the screen; this copy of its logo starts at
     // that same spot inside the main window, so when the splash card dissolves the logo stays
-    // put, then glides and shrinks onto the brand in the top-left. Icon and text move together:
-    // the text lands on the brand title (size and position), then cross-fades into it.
+    // put, then glides and shrinks onto the brand in the top-left. Icon and text move together.
+    // No flash on landing: during the flight the splash text ("学习通 PLUS", Black) dissolves into
+    // an exact copy of the brand title ("学习通PLUS", same font, lands at the same size/place), so
+    // when the real brand takes over in the same frame nothing changes on screen; only the
+    // subtitle then fades in. The target is taken from the shell's settled position (the shell
+    // itself slides in by 14 px, which used to make the logo land low and jump).
+    // (No subtitle under the brand: the user asked for 学习通课程助手 to be removed.)
     readonly property bool splashIntro: typeof startup !== "undefined" && startup && startup.splashShown && Theme.motion
     Item {
         id: introLogo
@@ -205,19 +211,31 @@ ApplicationWindow {
                 smooth: true
                 mipmap: true
             }
-            Text {
-                id: introText
+            Item {
+                id: introTextBox
                 anchors.verticalCenter: parent.verticalCenter
-                text: "学习通 PLUS"
-                color: Theme.text
-                font.family: "Microsoft YaHei UI"
-                font.pixelSize: 44
-                font.weight: Font.Black
-                // Extra move / size so that, with the whole row scaled, the text ends on the brand title.
-                transform: [
-                    Scale { id: textScale; origin.x: 0; origin.y: introText.height / 2 },
-                    Translate { id: textShift }
-                ]
+                width: introText.implicitWidth
+                height: introText.implicitHeight
+                transform: Translate { id: textShift }
+                Text {
+                    id: introText              // the splash wordmark
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "学习通 PLUS"
+                    color: Theme.text
+                    font.family: "Microsoft YaHei UI"
+                    font.pixelSize: 44
+                    font.weight: Font.Black
+                }
+                Text {
+                    id: introTitle             // the brand title, sized to land at brandTitle's size
+                    anchors.verticalCenter: parent.verticalCenter
+                    opacity: 0
+                    text: brandTitle.text
+                    color: brandTitle.color
+                    font.family: brandTitle.font.family
+                    font.weight: brandTitle.font.weight
+                    font.pixelSize: brandTitle.font.pixelSize / Math.max(0.05, fly.toScale)
+                }
             }
         }
 
@@ -226,18 +244,20 @@ ApplicationWindow {
             const s = window.screen
             const cx = (s ? s.virtualX + s.width / 2 : window.x + window.width / 2) - window.x
             const cy = (s ? s.virtualY + s.height / 2 : window.y + window.height / 2) - window.y - 12
+            // Settled positions: remove the shell's entrance offset (shellShift → 0).
             const target = brandIcon.mapToItem(window.contentItem, 0, 0)
+            target.y -= shellShift.y
             const k = brandIcon.width / 112
             fly.fromX = cx - width / 2
             fly.fromY = cy - height / 2
             fly.toX = target.x
             fly.toY = target.y
             fly.toScale = k
-            // Where the brand title is, in this row's unscaled coordinates once the row has landed.
+            // Move the text so the brand-title copy ends exactly on brandTitle (row coordinates, unscaled).
             const title = brandTitle.mapToItem(window.contentItem, 0, 0)
-            fly.textScale = brandTitle.font.pixelSize / (introText.font.pixelSize * k)
-            fly.textDx = (title.x - target.x) / k - introText.x
-            fly.textDy = (title.y + brandTitle.height / 2 - target.y) / k - (introText.y + introText.height / 2)
+            title.y -= shellShift.y
+            fly.textDx = (title.x - target.x) / k - (introTextBox.x + introTitle.x)
+            fly.textDy = (title.y - target.y) / k - (introTextBox.y + introTitle.y)
             fly.start()
         }
 
@@ -248,25 +268,26 @@ ApplicationWindow {
             property real toX: 0
             property real toY: 0
             property real toScale: 0.32
-            property real textScale: 1
             property real textDx: 0
             property real textDy: 0
             NumberAnimation { target: introLogo; property: "x"; from: fly.fromX; to: fly.toX; duration: 720; easing.type: Easing.InOutCubic }
             NumberAnimation { target: introLogo; property: "y"; from: fly.fromY; to: fly.toY; duration: 720; easing.type: Easing.InOutCubic }
             NumberAnimation { target: introLogo; property: "scale"; from: 1; to: fly.toScale; duration: 720; easing.type: Easing.InOutCubic }
-            NumberAnimation { target: textScale; property: "xScale"; from: 1; to: fly.textScale; duration: 720; easing.type: Easing.InOutCubic }
-            NumberAnimation { target: textScale; property: "yScale"; from: 1; to: fly.textScale; duration: 720; easing.type: Easing.InOutCubic }
             NumberAnimation { target: textShift; property: "x"; from: 0; to: fly.textDx; duration: 720; easing.type: Easing.InOutCubic }
             NumberAnimation { target: textShift; property: "y"; from: 0; to: fly.textDy; duration: 720; easing.type: Easing.InOutCubic }
-            // Landing: the flying text hands over to the real brand row.
+            // The wordmark becomes the brand title while it travels (not at the end).
             SequentialAnimation {
-                PauseAnimation { duration: 560 }
+                PauseAnimation { duration: 260 }
                 ParallelAnimation {
-                    NumberAnimation { target: introText; property: "opacity"; from: 1; to: 0; duration: 160 }
-                    NumberAnimation { target: brandRow; property: "opacity"; from: 0; to: 1; duration: 160 }
+                    NumberAnimation { target: introText; property: "opacity"; from: 1; to: 0; duration: 300; easing.type: Easing.InOutQuad }
+                    NumberAnimation { target: introTitle; property: "opacity"; from: 0; to: 1; duration: 300; easing.type: Easing.InOutQuad }
                 }
             }
-            onFinished: introLogo.introDone = true
+            onFinished: {
+                // Same frame: the real brand appears where the identical copy is, then the copy goes.
+                brandRow.opacity = 1
+                introLogo.introDone = true
+            }
         }
     }
     onVisibleChanged: {
@@ -329,7 +350,6 @@ ApplicationWindow {
                         ColumnLayout {
                             spacing: 0
                             Text { id: brandTitle; text: controller.appName; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 15; font.weight: Font.DemiBold }
-                            Text { text: "学习通课程助手"; color: Theme.muted; font.family: Theme.uiFont; font.pixelSize: 11 }
                         }
                     }
 
@@ -630,6 +650,30 @@ ApplicationWindow {
             promptDialog.message = text
             promptDialog.open()
         }
+        function onManualPopupRequested() {
+            if (!manualDialog.visible && !guide.visible) manualDialog.open()
+        }
+    }
+
+    // Content the program does not do (documents, reading, surveys …), shown when no push
+    // service is configured. The list keeps growing while the dialog is open.
+    ConfirmDialog {
+        id: manualDialog
+        title: "有内容需要手动完成"
+        width: 480
+        acceptText: "去设置推送"
+        rejectText: "知道了"
+        message: {
+            const items = controller.manualTasks
+            let text = "本程序只自动完成视频和章节检测。下面的内容需要你到学习通手动完成：\n"
+            for (let i = 0; i < Math.min(items.length, 8); ++i) {
+                const t = items[i]
+                text += "\n• " + t.kind + (t.name ? "「" + t.name + "」" : "") + " — " + t.chapter
+            }
+            if (items.length > 8) text += "\n… 共 " + items.length + " 项（完整列表见运行日志）"
+            return text + "\n\n设置推送服务后，会改为推送提醒，不再弹窗。"
+        }
+        onAccepted: window.openSettings()
     }
 
     Connections {

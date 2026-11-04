@@ -71,6 +71,12 @@ class MainActivity : ComponentActivity() {
         ContextCompat.registerReceiver(this, RunState.receiver, IntentFilter(TaskService.ACTION_EVENT),
             ContextCompat.RECEIVER_NOT_EXPORTED)
         RunState.sync(this)
+        RunState.notificationsAllowed = hasNotificationPermission(this)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        RunState.notificationsAllowed = hasNotificationPermission(this)
     }
 
     override fun onStop() {
@@ -101,7 +107,6 @@ fun AppRoot(splash: Boolean) {
     LaunchedEffect(attempt) {
         Brand.iconRect = null
         Brand.titleRect = null
-        Brand.revealAlpha = 0f
         Courses.load(ctx)
         loadError = ""
         runCatching { SettingsModel.load(ctx) }.onFailure {
@@ -272,5 +277,5 @@ private fun MainShell(brandHidden: Boolean, reopenGuide: () -> Unit) {
             }
         }
     }
-    RunDialogs()
+    RunDialogs(openSettings = { tab = 1 })
 }

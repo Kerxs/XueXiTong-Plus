@@ -285,10 +285,27 @@ def _process_attachment_cards(cards: List[Dict[str, Any]]) -> List[Dict[str, Any
             if work_job:
                 job_list.append(work_job)
         else:
-            logger.warning(f"Unknown card type: {card_type}")
-            logger.warning(card)
+            # 不认识的任务点（问卷、讨论、链接等）不再静默丢弃：交给 main 提醒用户手动完成
+            logger.debug(f"Unknown card type: {card_type}")
+            job_list.append(_process_other_task(card, card_type))
 
     return job_list
+
+
+def _card_title(card: Dict[str, Any]) -> str:
+    prop = card.get("property", {}) or {}
+    return str(prop.get("title") or prop.get("name") or card.get("name") or "").strip()
+
+
+def _process_other_task(card: Dict[str, Any], card_type: str) -> Dict[str, Any]:
+    """A task point this program does not do (survey, discussion, link …): reported for manual completion."""
+    return {
+        "type": "other",
+        "card_type": card_type,
+        "jobid": card.get("jobid", str(card.get("id", ""))),
+        "name": _card_title(card),
+        "otherinfo": card.get("otherInfo", ""),
+    }
 
 
 def _process_live_task(card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -357,6 +374,7 @@ def _process_document_task(card: Dict[str, Any]) -> Dict[str, Any]:
     """处理文档类型任务"""
     return {
         "type": "document",
+        "name": _card_title(card),
         "jobid": card.get("jobid", ""),
         "otherinfo": card.get("otherInfo", ""),
         "jtoken": card.get("jtoken", ""),
@@ -371,6 +389,7 @@ def _process_work_task(card: Dict[str, Any]) -> Dict[str, Any]:
     """处理作业类型任务"""
     return {
         "type": "workid",
+        "name": _card_title(card),
         "jobid": card.get("jobid", ""),
         "otherinfo": card.get("otherInfo", ""),
         "mid": card.get("mid", ""),

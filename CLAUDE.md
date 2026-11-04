@@ -91,6 +91,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\build_windows.ps1
 - `api/net.py`：网络断开时 `JobProcessor` 等网络恢复再重试该章节，不占用重试次数；章节处理抛异常不再让工作线程退出（以前会导致 `task_queue.join()` 永久卡住）。`SessionManager` 的重试带退避，超时 (10, 20) 秒。登录时没网也会等网络恢复后重试。
 - 视频：倍速已失效，固定 1 倍速（`main.py` 强制；桌面和手机的倍速选项都显示“已失效”）。`Chaoxing.required_watch_ratio` 读取任务点的 `rt`（0.9 / 1），看到要求比例时立即上报，平台确认 `isPassed` 即结束。
 - AI 客户端超时 120 秒、重试 2 次（openai 默认 600 秒）。题库请求携带 TOKEN 时校验 HTTPS 证书；只有自建的 TikuAdapter 不校验。
+- 自动化范围：只自动完成视频（含音频）和章节检测（`main.AUTOMATED_JOB_TYPES`）。文档、阅读、直播以及解码器不认识的任务点（问卷、讨论、链接…，`decode._process_other_task`）交给 `api/manual.py`：写日志、输出 `__CX_MANUAL_TASK__` 事件、有推送服务时推送，运行结束时汇总。界面：配置了推送（手机：本机通知且有通知权限）只提示；没有推送时弹窗列出（桌面 `manualDialog`，手机 `RunDialogs`）。
+- 开屏交接：飞行途中启动画面的文字渐变成品牌标题的同款副本，落地同一帧换成真正的品牌（没有闪烁）；品牌下没有副标题；启动画面没有进度条。
 - 推送服务 `Local`（本机通知）：`api.notification.set_local_handler` 注册后可用；安卓注册为系统通知，桌面未注册（选项只在手机上出现）。
 
 ## 安卓版（`android/`，开发中）

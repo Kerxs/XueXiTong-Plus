@@ -17,6 +17,8 @@ import org.json.JSONObject
 data class LogLine(val level: String, val message: String, val time: String)
 data class Progress(val name: String, val percent: Int, val done: String, val total: String)
 data class CourseItem(val courseId: String, val clazzId: String, val title: String)
+data class ManualTask(val course: String, val chapter: String, val kind: String, val name: String)
+
 data class Question(
     val index: Int, val type: String, val title: String, val options: String,
     val answer: String, val source: String, val origin: String,
@@ -34,6 +36,20 @@ object RunState {
     var activeAt by mutableLongStateOf(0L)
     /** How the last run ended: "" (none yet) | done | stopped | error — like the desktop status. */
     var lastResult by mutableStateOf("")
+
+    /** Content the program does not do (api/manual.py): documents, reading, surveys … */
+    val manualTasks = mutableStateListOf<ManualTask>()
+    var showManualDialog by mutableStateOf(false)
+
+    /** System notification permission (refreshed by MainActivity on start / resume). */
+    var notificationsAllowed by mutableStateOf(true)
+
+    /** 本机通知 (with permission) or a push service with an address: the task process can reach the user. */
+    fun pushConfigured(): Boolean {
+        val provider = SettingsModel.values["notification.provider"].orEmpty()
+        if (provider == "Local") return notificationsAllowed
+        return provider.isNotEmpty() && SettingsModel.values["notification.url"].orEmpty().isNotBlank()
+    }
 
     fun elapsedSeconds(now: Long): Long =
         if (!running) 0 else (activeMs + if (paused) 0 else (now - activeAt).coerceAtLeast(0)) / 1000
@@ -103,7 +119,7 @@ object RunState {
     }
 
     fun reset() {
-        logs.clear(); progress.clear(); questions.clear()
+        logs.clear(); progress.clear(); questions.clear(); manualTasks.clear(); showManualDialog = false
         course = ""; chapter = ""; finishedTasks = 0
         videoSource = ""; videoTitle = ""; workPhase = ""; workTitle = ""; workCoverRate = 0
         prompt = null; courses = null
@@ -147,6 +163,13 @@ object RunState {
             }
             "workpreview" -> if (e.optBoolean("valid", true)) applyWork(e.optJSONObject("data") ?: JSONObject())
             "prompt" -> prompt = e.optString("text")
+            "manualtask" -> {
+                val task = ManualTask(e.optString("course"), e.optString("chapter"), e.optString("kind"), e.optString("name"))
+                if (task !in manualTasks) {
+                    manualTasks.add(task)
+                    if (!pushConfigured()) showManualDialog = true   // no notification: tell the user in the app
+                }
+            }
             "courselist" -> {
                 val arr = e.optJSONArray("courses") ?: JSONArray()
                 courses = (0 until arr.length()).map {

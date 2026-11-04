@@ -31,6 +31,7 @@ from ui.output_parser import (
     ActivityEvent,
     CourseListEvent,
     LogEvent,
+    ManualTaskEvent,
     OutputParser,
     StreamDecoder,
     strip_ansi,
@@ -239,6 +240,7 @@ class AppController(QObject):
         self._video_active = False
         self._work: dict = {}
         self._work_status = ""
+        self._manual_tasks: list[dict] = []
         self._theme = str(self._settings.value("ui/theme", "system"))
         self._clock = QTimer(self)
         self._clock.setInterval(1000)
@@ -856,6 +858,8 @@ class AppController(QObject):
         self._work = {}
         self._work_status = ""
         self.workChanged.emit()
+        self._manual_tasks = []
+        self.manualTasksChanged.emit()
         self._set_video(video_message_html("等待视频任务开始"), "", False, "等待视频任务开始")
         self.dashboardChanged.emit()
         self._set_status("正在运行", "running")
@@ -946,10 +950,37 @@ class AppController(QObject):
                 self._set_video(video_message_html("当前章节没有可显示的视频流"), event.title, False, "当前章节没有可显示的视频流")
         elif isinstance(event, WorkPreviewEvent):
             self._handle_work(event)
+        elif isinstance(event, ManualTaskEvent):
+            self._on_manual_task(event)
         elif isinstance(event, CourseListEvent):
             self.courseSelectionRequested.emit(event.courses)
         elif isinstance(event, PromptEvent):
             self.promptRequested.emit(event.text)
+
+    # ----- content the program does not do (api/manual.py) ------------------
+    manualTasksChanged = Signal()
+    manualPopupRequested = Signal()
+
+    manualTasks = Property("QVariantList", lambda self: self._manual_tasks, notify=manualTasksChanged)
+    pushConfigured = Property(bool, lambda self: self.push_configured(), notify=configChanged)
+
+    def push_configured(self) -> bool:
+        """A push service that can reach the user (the desktop has no 本机通知)."""
+        provider = str(self._advanced.get("notification.provider", "")).strip()
+        url = str(self._advanced.get("notification.url", "")).strip()
+        return bool(provider) and provider != "Local" and bool(url)
+
+    def _on_manual_task(self, event: ManualTaskEvent) -> None:
+        item = {"course": event.course, "chapter": event.chapter, "kind": event.kind, "name": event.name}
+        if item in self._manual_tasks:
+            return
+        self._manual_tasks = [*self._manual_tasks, item]
+        self.manualTasksChanged.emit()
+        if self.push_configured():
+            self.toast.emit(f"发现需要手动完成的{event.kind}，已推送提醒", "warning")
+        else:
+            # No push service: tell the user in the window instead.
+            self.manualPopupRequested.emit()
 
     def _handle_work(self, event: WorkPreviewEvent) -> None:
         if not event.valid:

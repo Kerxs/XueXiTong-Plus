@@ -21,6 +21,9 @@ class DummyChaoxing:
     def get_job_list(self, course, point):
         return self.job_info["jobs"], self.job_info["job_info"]
 
+    def study_video(self, *args, **kwargs):
+        return main.StudyResult.ERROR   # a video that keeps failing (no network needed)
+
 
 class _NoopRateLimiter:
     def limit_rate(self, *args, **kwargs):
@@ -70,8 +73,8 @@ class JobProcessorTestCase(unittest.TestCase):
         return {"jobs": [], "job_info": {"notOpen": True}}
 
     def _error_job_info(self):
-        # 未知任务类型会走 ERROR 分支，不依赖网络。
-        return {"jobs": [{"type": "unknown"}], "job_info": {}}
+        # 一直失败的视频任务走 ERROR 分支（未知类型现在会提醒用户手动完成，不再重试），不依赖网络。
+        return {"jobs": [{"type": "video", "jobid": "v", "name": "v"}], "job_info": {}}
 
     def test_not_open_does_not_retry_forever(self):
         processor, _ = self._make_processor(self._not_open_job_info(), max_tries=3)

@@ -354,7 +354,7 @@ private fun AboutPage(reopenGuide: () -> Unit) {
     fun open(url: String) = runCatching {
         ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
-    XCard(Modifier.fillMaxWidth(), title = "学习通PLUS ${Updater.currentVersion(ctx)}", subtitle = "学习通课程助手（手机版）") {
+    XCard(Modifier.fillMaxWidth(), title = "学习通PLUS ${Updater.currentVersion(ctx)}", subtitle = "手机版") {
         Text("基于开源项目 Samueli924/chaoxing，遵循 GPL-3.0 协议，禁止用于盈利；与超星、学习通官方无任何关联。",
             color = c.text, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

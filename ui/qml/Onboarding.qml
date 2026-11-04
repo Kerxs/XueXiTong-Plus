@@ -479,12 +479,32 @@ Rectangle {
                                     + (guide.answerSkipped || controller.answerSetupProblem !== ""
                                         ? "\n高级设置还没完成，章节检测找不到答案的题目会随机作答；可以在“设置 → 高级选项”里补上。"
                                         : "\n高级设置已保存。")
-                                    + "\n进入运行面板后，在左侧“基本参数”里选择课程和速度，再点击“开始运行”。"
+                                    + "\n进入运行面板后，在左侧“基本参数”里选择课程，再点击“开始运行”。"
                             color: Theme.muted
                             font.family: Theme.uiFont
                             font.pixelSize: 14
                             lineHeight: 1.3
                             wrapMode: Text.Wrap
+                        }
+                        // Honest expectations before the first run (same notice on the phone).
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: noticeText.implicitHeight + 24
+                            radius: Theme.radius
+                            color: Theme.warningSoft
+                            Text {
+                                id: noticeText
+                                anchors.fill: parent
+                                anchors.margins: 12
+                                text: "自动化不能保证 100% 成功：视频可能因验证码、网络或平台规则中断，章节检测可能答错；文档、阅读、问卷等内容需要你手动完成。"
+                                    + (controller.pushConfigured ? ""
+                                        : "\n还没有配置通知推送：建议在“设置 → 高级选项 → 通知推送”配置，任务出错或需要手动处理时能及时知道，以免浪费时间。")
+                                color: Theme.warning
+                                font.family: Theme.uiFont
+                                font.pixelSize: 13
+                                lineHeight: 1.3
+                                wrapMode: Text.Wrap
+                            }
                         }
                         Item { Layout.fillHeight: true }
                     }

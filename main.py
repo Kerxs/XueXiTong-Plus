@@ -9,7 +9,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Any
 from tqdm import tqdm
-from api import net, pause
+from api import manual, net, pause
 from api.answer import Tiku
 from api.base import Chaoxing, Account, StudyResult
 from api.exceptions import LoginError, InputFormatError
@@ -281,10 +281,18 @@ def init_chaoxing(common_config, tiku_config, config_path=None):
     return chaoxing
 
 
-def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, speed: float) -> StudyResult:
-    """处理单个任务点"""
+AUTOMATED_JOB_TYPES = ("video", "workid")
+
+
+def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, speed: float,
+                point: dict | None = None) -> StudyResult:
+    """处理单个任务点：自动完成视频（含音频）和章节检测，其他内容提醒用户手动完成"""
     # 桌面版暂停时，不开始新的任务点
     pause.wait_if_paused()
+    if job.get("type") not in AUTOMATED_JOB_TYPES:
+        # 文档、阅读、直播、问卷、讨论等：通知 / 界面提示用户手动完成，不重试
+        manual.report(course, point or {}, job)
+        return StudyResult.SUCCESS
     # 视频任务
     if job["type"] == "video":
         logger.trace(f"识别到视频任务, 任务章节: {course['title']} 任务ID: {job['jobid']}")
@@ -504,7 +512,7 @@ def process_chapter(chaoxing: Chaoxing, course: dict[str, Any], point: dict[str,
 
     job_results: list[StudyResult] = []
     for job in jobs:
-        result = process_job(chaoxing, course, job, job_info, speed)
+        result = process_job(chaoxing, course, job, job_info, speed, point)
         job_results.append(result)
 
     for result in job_results:
@@ -607,6 +615,8 @@ def main():
         notification.config_set(notification_config)
         notification = notification.get_notification_from_config()
         notification.init_notification()
+        manual.reset()
+        manual.set_notifier(notification)
 
         # 检查当前登录状态（启动时没有网络：等网络恢复后重试，而不是直接退出）
         for attempt in range(3):
@@ -648,8 +658,13 @@ def main():
 
         tqdm.format_sizeof = _old_format_sizeof
 
-        logger.info("所有课程学习任务已完成")
-        notification.send("chaoxing : 所有课程学习任务已完成")
+        pending = manual.summary()
+        if pending:
+            logger.warning(f"视频和章节检测已处理完；{pending}")
+            notification.send(f"chaoxing : 视频和章节检测已处理完；{pending}")
+        else:
+            logger.info("所有课程学习任务已完成")
+            notification.send("chaoxing : 所有课程学习任务已完成")
 
         # 刷课完成后，如果开启了增加章节学习次数，则执行
         if add_learning_count:

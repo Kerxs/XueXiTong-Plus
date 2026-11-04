@@ -90,35 +90,16 @@ Window {
             }
         }
 
-        // Real loading status from the startup sequence.
-        Column {
+        // Real loading status from the startup sequence (no progress bar).
+        Text {
             anchors.left: parent.left
-            anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.leftMargin: 34
-            anchors.rightMargin: 34
             anchors.bottomMargin: 22
-            spacing: 8
-
-            Text {
-                text: startup.status + (startup.loaded ? "" : "…")
-                color: "#7a7f8c"
-                font.family: "Microsoft YaHei UI"
-                font.pixelSize: 12
-            }
-            Rectangle {
-                width: parent.width
-                height: 3
-                radius: 2
-                color: "#eceef3"
-                Rectangle {
-                    width: parent.width * startup.progress
-                    height: parent.height
-                    radius: 2
-                    color: "#000000"
-                    Behavior on width { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
-                }
-            }
+            text: startup.status + (startup.loaded ? "" : "…")
+            color: "#7a7f8c"
+            font.family: "Microsoft YaHei UI"
+            font.pixelSize: 12
         }
     }
 

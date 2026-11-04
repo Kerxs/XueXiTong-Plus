@@ -325,7 +325,17 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
                         SettingsModel.group("answer")?.let { SettingsGroupCard(it, appearDelay = 60) }
                         if (problem.isNotEmpty()) Consequence(problem)
                     }
-                    else -> KeepAliveContent()
+                    else -> {
+                        // Honest expectations before the first run (same notice on the desktop).
+                        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.warningSoft)
+                            .padding(horizontal = 12.dp, vertical = 10.dp)) {
+                            Text("自动化不能保证 100% 成功：视频可能因验证码、网络或平台规则中断，章节检测可能答错；文档、阅读、问卷等内容需要你手动完成。" +
+                                if (RunState.pushConfigured()) "" else
+                                    "\n还没有可用的通知：建议允许通知（下方第 1 项），或在“设置 → 通知推送”配置推送服务，任务出错或需要手动处理时能及时知道，以免浪费时间。",
+                                color = c.warning, fontSize = 13.sp)
+                        }
+                        KeepAliveContent()
+                    }
                 }
             }
         }

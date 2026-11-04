@@ -151,6 +151,14 @@ fun RunScreen(snackbar: SnackbarHostState, openSettings: () -> Unit, openKeepAli
             }
         }
         CourseRow(snackbar)
+        AnimatedVisibility(RunState.manualTasks.isNotEmpty(), enter = fadeIn(tween(m.normal)) + expandVertically(tween(m.normal)),
+            exit = fadeOut(tween(m.fast)) + shrinkVertically(tween(m.normal))) {
+            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.accentSoft)
+                .clickable { RunState.showManualDialog = true }.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                Text("有 ${RunState.manualTasks.size} 项内容需要手动完成（文档、阅读、问卷等），点这里查看",
+                    color = c.accent, fontSize = 12.sp)
+            }
+        }
         Stats()
         var tab by rememberSaveable { mutableStateOf("tasks") }
         val tabs = listOf("tasks" to "任务", "video" to "视频", "work" to "答题", "log" to "日志")
@@ -392,9 +400,36 @@ private fun LogPane() {
 
 /** The worker waits on input(): course choice when no course ID is set, or a Y/n question. */
 @Composable
-fun RunDialogs() {
+fun RunDialogs(openSettings: () -> Unit = {}) {
     val ctx = LocalContext.current
     val c = X.colors
+    if (RunState.showManualDialog && RunState.manualTasks.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { RunState.showManualDialog = false },
+            containerColor = c.surface, titleContentColor = c.text, textContentColor = c.text,
+            shape = RoundedCornerShape(Dimens.radiusLarge),
+            title = { Text("有内容需要手动完成") },
+            text = {
+                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("本程序只自动完成视频和章节检测。下面的内容需要你到学习通手动完成：", color = c.muted, fontSize = 13.sp)
+                    RunState.manualTasks.forEach { t ->
+                        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.surfaceAlt)
+                            .padding(horizontal = 10.dp, vertical = 8.dp)) {
+                            Text(t.kind + if (t.name.isNotEmpty()) "「${t.name}」" else "", color = c.text, fontSize = 14.sp)
+                            Text("${t.course} / ${t.chapter}", color = c.faint, fontSize = 12.sp)
+                        }
+                    }
+                    if (!RunState.pushConfigured()) {
+                        Text("在“设置 → 通知推送”选择本机通知后，会改为通知提醒。", color = c.muted, fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = { XButton("知道了", { RunState.showManualDialog = false }, kind = Kind.Primary) },
+            dismissButton = {
+                if (!RunState.pushConfigured()) XButton("设置通知", { RunState.showManualDialog = false; openSettings() }, kind = Kind.Ghost)
+            },
+        )
+    }
     RunState.prompt?.let { text ->
         AlertDialog(
             onDismissRequest = {},

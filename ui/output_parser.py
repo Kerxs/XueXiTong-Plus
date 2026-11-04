@@ -15,6 +15,7 @@ from typing import Any
 
 VIDEO_PREVIEW_PREFIX = "__CX_VIDEO_PREVIEW__"
 WORK_PREVIEW_PREFIX = "__CX_WORK_PREVIEW__"
+MANUAL_TASK_PREFIX = "__CX_MANUAL_TASK__"   # api/manual.py
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 LOGURU_RE = re.compile(
@@ -71,6 +72,16 @@ class WorkPreviewEvent:
     phase: str
     data: dict[str, Any] = field(default_factory=dict)
     valid: bool = True
+
+
+@dataclass
+class ManualTaskEvent:
+    """A task point the program does not do (document, reading, survey …): the user must."""
+
+    course: str
+    chapter: str
+    kind: str
+    name: str
 
 
 @dataclass
@@ -188,10 +199,17 @@ class OutputParser:
         # tqdm redraws its bar with a leading carriage return and no line end, so a preview line printed
         # while a video is running arrives glued behind the bar ("...| 06:22/12:44__CX_...").
         # Split there, or the quiz / video event is lost as an ordinary log line.
-        for prefix in (VIDEO_PREVIEW_PREFIX, WORK_PREVIEW_PREFIX):
+        for prefix in (VIDEO_PREVIEW_PREFIX, WORK_PREVIEW_PREFIX, MANUAL_TASK_PREFIX):
             at = line.find(prefix)
             if at > 0:
                 return [*self.parse_line(line[:at]), *self.parse_line(line[at:])]
+
+        if line.startswith(MANUAL_TASK_PREFIX):
+            data = _parse_json(line.removeprefix(MANUAL_TASK_PREFIX))
+            if data is None:
+                return []
+            return [ManualTaskEvent(str(data.get("course", "")), str(data.get("chapter", "")),
+                                    str(data.get("kind", "其他内容")), str(data.get("name", "")))]
 
         if line.startswith(VIDEO_PREVIEW_PREFIX):
             data = _parse_json(line.removeprefix(VIDEO_PREVIEW_PREFIX))
