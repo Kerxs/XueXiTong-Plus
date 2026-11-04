@@ -985,8 +985,11 @@ class Chaoxing:
 
         forbidden_retry = 0
         max_forbidden_retry = 2
+        # 视频到末尾后等平台确认完成：最多上报 8 次、每次间隔约 3 秒（约 25 秒），
+        # 不再每秒上报 20 次（平台一直不确认时要白等约一分钟）
         completion_report_attempts = 0
-        max_completion_report_attempts = 20
+        max_completion_report_attempts = 8
+        completion_report_interval = 3.0
 
         passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, duration,
                                                 _type, headers=headers, _isdrag=4)
@@ -1053,6 +1056,8 @@ class Chaoxing:
                                 _job.get("name", _job.get("jobid", "未知任务")),
                             )
                             return StudyResult.ERROR
+                        # 下一次确认前多等一会儿（循环本身还会再睡 THRESHOLD 秒）
+                        time.sleep(max(0.0, completion_report_interval - gc.THRESHOLD))
                     else:
                         completion_report_attempts = 0
 
