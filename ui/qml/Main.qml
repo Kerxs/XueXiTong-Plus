@@ -33,17 +33,58 @@ ApplicationWindow {
         controller.shutdown()
         Qt.quit()
     }
+
+    // ---------- window animations (own title bar) ----------
+    // 最小化 / 隐藏到托盘 / 退出: the window fades out while its content shrinks a little, then the
+    // action runs; coming back (taskbar, tray) fades it in again. 最大化 / 还原 glide the frame.
+    // All instant when 界面动画 is off (Theme.motion).
+    property var afterFade: null
+    function fadeOutThen(action) {
+        if (!Theme.motion) { action(); return }
+        window.afterFade = action
+        fadeIn.stop()
+        fadeOut.start()
+    }
+    function animatedMinimize() { fadeOutThen(() => window.showMinimized()) }
+    function animatedHide() { fadeOutThen(() => { window.hide(); if (window.trayObj) window.trayObj.hintOnce() }) }
+    function animatedQuit() { fadeOutThen(() => window.quitApp()) }
+
+    ParallelAnimation {
+        id: fadeOut
+        NumberAnimation { target: window; property: "opacity"; to: 0; duration: 170; easing.type: Easing.InCubic }
+        NumberAnimation { target: window.contentItem; property: "scale"; to: 0.96; duration: 170; easing.type: Easing.InCubic }
+        onFinished: {
+            const action = window.afterFade
+            window.afterFade = null
+            if (action) action()
+        }
+    }
+    ParallelAnimation {
+        id: fadeIn
+        NumberAnimation { target: window; property: "opacity"; to: 1; duration: 220; easing.type: Easing.OutCubic }
+        NumberAnimation { target: window.contentItem; property: "scale"; to: 1; duration: 220; easing.type: Easing.OutCubic }
+    }
+    // Back on screen after 最小化 or the tray: fade in from where fadeOut left it.
+    onVisibilityChanged: visibility => {
+        if (visibility === Window.Hidden || visibility === Window.Minimized || fadeOut.running)
+            return
+        if (window.opacity < 1 || window.contentItem.scale < 1) {
+            if (!Theme.motion) { window.opacity = 1; window.contentItem.scale = 1; return }
+            fadeIn.start()
+        }
+    }
     readonly property bool accountConfigured: controller.useCookies
         || (controller.username.trim() !== "" && controller.password !== "")
     readonly property bool overlayOpen: coursePicker.visible || stopConfirm.visible
         || closeConfirm.visible || promptDialog.visible || guide.visible || updateDialog.visible
-        || manualDialog.visible
+        || manualDialog.visible || closeChoice.visible
 
     Component.onCompleted: {
+        window.contentItem.transformOrigin = Item.Center   // window fade / shrink animations
         window.width = Math.max(window.minimumWidth, windowSettings.width)
         window.height = Math.max(window.minimumHeight, windowSettings.height)
         if (windowSettings.maximized)
-            Qt.callLater(window.toggleMaximize)
+            Qt.callLater(() => window.toggleMaximize(false))
         showGuide = !controller.onboardingDone
         controller.updater.checkOnStartup()
     }
@@ -73,19 +114,46 @@ ApplicationWindow {
     property rect normalGeometry: Qt.rect(0, 0, 0, 0)
     readonly property int titleHeight: 36
 
-    function toggleMaximize() {
+    // animate: false when restoring the saved state at start-up (no glide while opening).
+    function toggleMaximize(animate) {
+        let target
         if (window.maximized) {
             window.maximized = false
-            window.x = normalGeometry.x; window.y = normalGeometry.y
-            window.width = normalGeometry.width; window.height = normalGeometry.height
+            target = normalGeometry
         } else {
             normalGeometry = Qt.rect(window.x, window.y, window.width, window.height)
             window.maximized = true
             const s = window.screen
-            window.x = s.virtualX
-            window.y = s.virtualY
-            window.width = s.desktopAvailableWidth
-            window.height = s.desktopAvailableHeight
+            target = Qt.rect(s.virtualX, s.virtualY, s.desktopAvailableWidth, s.desktopAvailableHeight)
+        }
+        window.pendingGeometry = target
+        if (animate === false || !Theme.motion || !window.visible) {
+            maximizeFx.stop()
+            window.applyPendingGeometry()
+            window.opacity = 1
+            window.contentItem.scale = 1
+            return
+        }
+        // Resizing this window is expensive (layouts + the native video view), so the frame is not
+        // animated pixel by pixel (it would jump anyway): the window dips, changes size once, and
+        // settles in with a small zoom — the same feel as 最小化 / 还原.
+        maximizeFx.restart()
+    }
+    property rect pendingGeometry: Qt.rect(0, 0, 0, 0)
+    function applyPendingGeometry() {
+        window.x = pendingGeometry.x; window.y = pendingGeometry.y
+        window.width = pendingGeometry.width; window.height = pendingGeometry.height
+    }
+    SequentialAnimation {
+        id: maximizeFx
+        ParallelAnimation {
+            NumberAnimation { target: window; property: "opacity"; to: 0.35; duration: 90; easing.type: Easing.InQuad }
+            NumberAnimation { target: window.contentItem; property: "scale"; to: 0.985; duration: 90; easing.type: Easing.InQuad }
+        }
+        ScriptAction { script: window.applyPendingGeometry() }
+        ParallelAnimation {
+            NumberAnimation { target: window; property: "opacity"; to: 1; duration: 200; easing.type: Easing.OutCubic }
+            NumberAnimation { target: window.contentItem; property: "scale"; from: 0.985; to: 1; duration: 220; easing.type: Easing.OutCubic }
         }
     }
 
@@ -129,7 +197,7 @@ ApplicationWindow {
                 if (window.maximized) {
                     // Dragging a maximized window restores it under the cursor, like Windows does.
                     const ratio = point.position.x / window.width
-                    window.toggleMaximize()
+                    window.toggleMaximize(false)   // instant: the window follows the cursor
                     window.x = point.scenePosition.x + window.x - window.width * ratio
                 }
                 window.startSystemMove()
@@ -141,7 +209,7 @@ ApplicationWindow {
         Row {
             anchors.right: parent.right
             anchors.top: parent.top
-            CaptionButton { glyph: ""; tip: "最小化"; onClicked: window.showMinimized() }
+            CaptionButton { glyph: ""; tip: "最小化"; onClicked: window.animatedMinimize() }
             CaptionButton {
                 glyph: window.maximized ? "" : ""
                 tip: window.maximized ? "向下还原" : "最大化"
@@ -291,16 +359,16 @@ ApplicationWindow {
 
         ParallelAnimation {
             id: flyAnim
-            NumberAnimation { target: introLogo; property: "prog"; from: 0; to: 1; duration: 720; easing.type: Easing.InOutCubic }
+            NumberAnimation { target: introLogo; property: "prog"; from: 0; to: 1; duration: 560; easing.type: Easing.InOutCubic }
             // The wordmark gives way to the title pieces while it travels.
             SequentialAnimation {
-                PauseAnimation { duration: 260 }
-                NumberAnimation { target: introText; property: "opacity"; from: 1; to: 0; duration: 300; easing.type: Easing.InOutQuad }
+                PauseAnimation { duration: 200 }
+                NumberAnimation { target: introText; property: "opacity"; from: 1; to: 0; duration: 240; easing.type: Easing.InOutQuad }
             }
         }
     }
     // The title copy, in pieces: native text whose font size animates (sharp and identical when
-    // it lands). Arrival order: the icon (720 ms), then 学, 习, 通, P, L, U, S one by one.
+    // it lands). Arrival order: the icon (560 ms), then 学, 习, 通, P, L, U, S one by one.
     Item {
         id: introTitles
         z: 91
@@ -348,8 +416,8 @@ ApplicationWindow {
                 id: piece
                 required property var modelData
                 required property int index
-                // first character 120 ms after the icon starts, then each one 60 ms after the previous
-                readonly property int delay: 120 + index * 60
+                // first character 90 ms after the icon starts, then each one 45 ms after the previous
+                readonly property int delay: 90 + index * 45
                 property real prog: 0
                 opacity: 0
                 text: modelData.text
@@ -371,13 +439,13 @@ ApplicationWindow {
                 SequentialAnimation {
                     id: pieceFly
                     PauseAnimation { duration: piece.delay }
-                    NumberAnimation { target: piece; property: "prog"; from: 0; to: 1; duration: 720; easing.type: Easing.InOutCubic }
+                    NumberAnimation { target: piece; property: "prog"; from: 0; to: 1; duration: 560; easing.type: Easing.InOutCubic }
                     ScriptAction { script: introTitles.pieceLanded() }
                 }
                 SequentialAnimation {
                     id: pieceFade
-                    PauseAnimation { duration: 200 + piece.delay / 2 }
-                    NumberAnimation { target: piece; property: "opacity"; to: 1; duration: 300; easing.type: Easing.InOutQuad }
+                    PauseAnimation { duration: 150 + piece.delay / 2 }
+                    NumberAnimation { target: piece; property: "opacity"; to: 1; duration: 240; easing.type: Easing.InOutQuad }
                 }
             }
         }
@@ -704,7 +772,7 @@ ApplicationWindow {
         message: "关闭窗口将结束当前任务。仍要退出吗？"
         acceptText: "退出"
         destructive: true
-        onAccepted: window.quitApp()
+        onAccepted: window.visible ? window.animatedQuit() : window.quitApp()
     }
 
     ConfirmDialog {
@@ -791,20 +859,69 @@ ApplicationWindow {
         }
     }
 
+    // Closing the window: ask (default) whether to keep running in the background or quit, with
+    // "以后都这样" to remember it; the remembered choice can be changed in 设置 → 运行.
     onClosing: close => {
         if (window.allowClose)
             return
-        if (window.trayObj && window.trayObj.closeToTray) {
-            // Keep running in the background; the tray icon brings the window back.
-            close.accepted = false
-            window.hide()
-            window.trayObj.hintOnce()
-            return
-        }
         close.accepted = false
-        if (controller.running)
-            closeConfirm.open()
-        else
-            window.quitApp()
+        const action = window.trayObj ? window.trayObj.closeAction : "quit"
+        if (action === "tray") {
+            window.animatedHide()           // keeps running; the tray icon brings the window back
+        } else if (action === "quit") {
+            if (controller.running) closeConfirm.open()
+            else window.animatedQuit()
+        } else {
+            closeChoice.remember = false
+            closeChoice.open()
+        }
+    }
+
+    BaseDialog {
+        id: closeChoice
+        title: "关闭窗口"
+        width: 460
+        property bool remember: false
+        contentItem: ColumnLayout {
+            spacing: 14
+            Text {
+                Layout.fillWidth: true
+                text: "要让学习通 PLUS 在后台继续运行，还是直接退出？"
+                    + (controller.running ? "\n任务正在运行：后台运行会继续任务，直接退出会结束任务。"
+                                          : "\n后台运行时程序留在系统托盘，点击托盘图标可以重新打开。")
+                color: Theme.text
+                font.family: Theme.uiFont
+                font.pixelSize: 13
+                lineHeight: 1.3
+                wrapMode: Text.Wrap
+            }
+            AppCheckBox {
+                text: "以后都这样，不再询问（可在“设置 → 运行”里修改）"
+                checked: closeChoice.remember
+                onToggled: closeChoice.remember = checked
+            }
+        }
+        buttons: [
+            AppButton { text: "取消"; kind: "ghost"; onClicked: closeChoice.close() },
+            AppButton {
+                text: "直接退出"
+                kind: "danger"
+                onClicked: {
+                    if (closeChoice.remember && window.trayObj) window.trayObj.closeAction = "quit"
+                    closeChoice.close()
+                    window.animatedQuit()
+                }
+            },
+            AppButton {
+                text: "后台运行"
+                kind: "primary"
+                visible: !!window.trayObj && window.trayObj.available
+                onClicked: {
+                    if (closeChoice.remember) window.trayObj.closeAction = "tray"
+                    closeChoice.close()
+                    window.animatedHide()
+                }
+            }
+        ]
     }
 }

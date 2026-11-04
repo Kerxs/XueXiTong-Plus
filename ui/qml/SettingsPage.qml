@@ -161,11 +161,12 @@ Item {
                     Divider {}
                     SettingRow {
                         visible: typeof tray !== "undefined" && tray.available
-                        label: "关闭窗口时在后台运行"
-                        hint: "关闭窗口后程序留在系统托盘，任务继续进行；点击托盘图标重新打开，右键菜单可退出"
-                        AppSwitch {
-                            checked: typeof tray !== "undefined" && tray.closeToTray
-                            onToggled: tray.closeToTray = checked
+                        label: "关闭窗口时"
+                        hint: "后台运行：程序留在系统托盘，任务继续进行，点击托盘图标重新打开，右键菜单可退出"
+                        Segmented {
+                            model: [{ value: "ask", label: "每次询问" }, { value: "tray", label: "后台运行" }, { value: "quit", label: "直接退出" }]
+                            current: typeof tray !== "undefined" ? tray.closeAction : "quit"
+                            onPicked: value => tray.closeAction = value
                         }
                     }
                     Divider { visible: typeof tray !== "undefined" && tray.available }

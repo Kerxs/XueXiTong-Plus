@@ -26,6 +26,8 @@
 - `ui/localmodels.py`：高级选项里“自动检测本机模型”。候选端口 = 常见默认端口（llama.cpp 8080、Ollama 11434、LM Studio 1234、vLLM 8000、5000/5001）+ 当前接口地址的端口 + 本机所有监听端口；对每个端口请求 `http://127.0.0.1:<端口>/v1/models`（不走代理，并发、短超时）。监听端口要同时问 `netstat` 和 PowerShell `Get-NetTCPConnection`：实测有 llama-server 只有后者能看到，状态列也可能是空的/本地化的，所以按“远端端口为 0”判断监听。llama.cpp 返回的模型名是 .gguf 路径，取文件名作为模型名称。
 - `ui/videoproxy.py`：视频预览的本地代理（只监听 127.0.0.1，只代理已登记的 `*.chaoxing.com` / `*.cldisk.com` 地址；视频 CDN 实际在 `s1/s2.cldisk.com`）。WebView2 的 `loadHtml()` 实际是 data: URL，CDN 收不到学习通的 Referer 会拒绝视频；现在预览页面和视频都由代理提供，代理转发时带上 Referer 并透传 Range。
 - `api/pause.py`：暂停 / 继续。GUI 暂停时创建 `%APPDATA%\ChaoxingDesktop\pause.flag`（路径经环境变量 `CHAOXING_PAUSE_FILE` 传给 worker），继续时删除。worker 在 `process_job` 开头和视频循环里调用 `wait_if_paused()`，视频循环把等待的秒数加到 `last_iter`，所以暂停时间不算观看时长、继续后进度不会跳。不要改成挂起进程：那样恢复后会把暂停时间算进进度。开始、停止、任务结束和退出时都会清掉标记。
+- 窗口动画：最小化 / 隐藏到托盘 / 退出时窗口淡出并略微缩小（`fadeOutThen`），回到屏幕时淡入；最大化 / 还原不逐帧改窗口尺寸（这个窗口每次改尺寸代价大，动画会直接跳到终点），而是“淡一下 → 一次改尺寸 → 缩放淡入”（`maximizeFx`）。拖动最大化窗口还原时不加动画。关闭动画时 `Theme.motion` 为 false 全部立即完成。
+- 关闭窗口：`tray.closeAction` = ask（默认，弹窗选“后台运行 / 直接退出”，可勾“以后都这样”）/ tray / quit，存在 QSettings `ui/closeAction`；旧版 `ui/closeToTray=false` 迁移为 quit。设置页“运行”卡片里可改。
 - 主窗口是无边框窗口（`Qt.FramelessWindowHint`），标题栏和 最小化 / 最大化 / 关闭 按钮在 `Main.qml` 里自绘；拖动标题栏移动、双击最大化，边缘和四角的 `ResizeEdge` 调整大小。最大化不用 `showMaximized()`（无边框窗口会盖住任务栏），而是铺满 `screen.desktopAvailable*` 并记住还原尺寸；QSettings 只保存还原尺寸。关闭按钮走 `window.close()`，所以仍会按设置隐藏到托盘。
 - `ui/tray.py`：后台模式（系统托盘 + 单实例）。关闭窗口默认隐藏到托盘，任务继续；再次启动程序会唤出已运行的窗口。所有真正退出的路径都走 `Main.qml` 的 `quitApp()`。
 - 编码：打包版 worker 不认 `PYTHONUTF8`，`worker.py` 启动时强制 stdout/stderr 为 UTF-8；GUI 用 `StreamDecoder` 增量解码，遇到非 UTF-8 自动改用 GB18030。

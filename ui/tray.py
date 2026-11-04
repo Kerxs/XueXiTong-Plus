@@ -87,14 +87,28 @@ class Tray(QObject):
 
     available = Property(bool, lambda self: self._available, constant=True)
 
-    def _get_close_to_tray(self) -> bool:
-        return self._available and str(self._settings.value("ui/closeToTray", "true")).lower() == "true"
+    # What closing the window does: "ask" (dialog, default), "tray" (keep running in the
+    # background) or "quit". Older versions stored a yes/no ui/closeToTray; someone who had
+    # turned it off keeps "quit", everyone else is asked once and can tick "以后都这样".
+    CLOSE_ACTIONS = ("ask", "tray", "quit")
 
-    def _set_close_to_tray(self, value: bool) -> None:
-        self._settings.setValue("ui/closeToTray", "true" if value else "false")
+    def _get_close_action(self) -> str:
+        value = str(self._settings.value("ui/closeAction", "") or "")
+        if value not in self.CLOSE_ACTIONS:
+            value = "quit" if str(self._settings.value("ui/closeToTray", "")).lower() == "false" else "ask"
+        if value == "tray" and not self._available:
+            return "quit"                       # no system tray: nothing to hide to
+        return value
+
+    def _set_close_action(self, value: str) -> None:
+        if value not in self.CLOSE_ACTIONS:
+            return
+        self._settings.setValue("ui/closeAction", value)
         self.closeToTrayChanged.emit()
 
-    closeToTray = Property(bool, _get_close_to_tray, _set_close_to_tray, notify=closeToTrayChanged)
+    closeAction = Property(str, _get_close_action, _set_close_action, notify=closeToTrayChanged)
+    # Kept for older QML: true when closing hides to the tray.
+    closeToTray = Property(bool, lambda self: self._get_close_action() == "tray", notify=closeToTrayChanged)
 
     @Slot(str, str)
     def notify(self, title: str, message: str) -> None:

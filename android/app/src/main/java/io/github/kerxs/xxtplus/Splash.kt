@@ -153,7 +153,7 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
             val finalY = target.top + (tr.top - start.top) * s1
             ((title.left - finalX) / s1) to ((title.top - finalY) / s1)
         } else 0f to 0f
-        val wordmarkAlpha = if (flying) 1f - ((t - 260f) / 300f).coerceIn(0f, 1f) else 1f
+        val wordmarkAlpha = if (flying) 1f - ((t - 200f) / 240f).coerceIn(0f, 1f) else 1f
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Row(
                 Modifier.offset { IntOffset(dx.roundToInt(), dy.roundToInt()) }
@@ -191,10 +191,10 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
     }
 }
 
-private const val FLIGHT_MS = 720
+private const val FLIGHT_MS = 560
 // Characters that fly on their own (spaces only take up room): 学, 习, 通, P, L, U, S.
 private val PIECE_STARTS = BRAND_TITLE.indices.filter { !BRAND_TITLE[it].isWhitespace() }
-private fun pieceDelay(i: Int) = 120 + i * 60          // first one 120 ms after the icon, then every 60 ms
+private fun pieceDelay(i: Int) = 90 + i * 45           // first one 90 ms after the icon, then every 45 ms
 private val FLIGHT_END = FLIGHT_MS + pieceDelay(PIECE_STARTS.size - 1)
 
 /**
@@ -216,7 +216,7 @@ private fun TitlePieces(t: Float, from: Rect, to: Rect) {
         val end = at + 1
         val delayMs = pieceDelay(i)
         val q = InOutCubic.transform(((t - delayMs) / FLIGHT_MS).coerceIn(0f, 1f))
-        val alpha = ((t - (200f + delayMs / 2f)) / 300f).coerceIn(0f, 1f)
+        val alpha = ((t - (150f + delayMs / 2f)) / 240f).coerceIn(0f, 1f)
         val x0 = from.left + big.getHorizontalPosition(at, true)
         val x1 = to.left + small.getHorizontalPosition(at, true)
         val size = 40f + (15f - 40f) * q
