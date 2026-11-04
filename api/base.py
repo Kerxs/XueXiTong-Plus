@@ -1225,7 +1225,7 @@ class Chaoxing:
                 except Exception as e:
                     logger.warning(f"设置题库错误反馈失败: {e}")
 
-            # 先把题目发给桌面版（运行面板、AI 讲解），不必等查找答案结束：
+            # 先把题目发给桌面版的运行面板，不必等查找答案结束：
             # 查找可能很慢或失败（例如大模型服务断开），题目仍然可以先看到。
             _emit_work_preview({
                 "phase": "questions",

@@ -113,13 +113,6 @@ class ControllerCourseDetectTestCase(unittest.TestCase):
         self.assertEqual(self.ctl.courseList, "189191,2151141")
         self.assertEqual(self.ctl.selected_course_names(), ["马克思主义基本原理", "大学物理（上）"])
 
-        # AI 讲解 page context falls back to the chosen courses when nothing is running.
-        from ui.assistant import LocalAI
-
-        ai = LocalAI(controller=self.ctl, data_dir=Path(self.tmp.name))
-        self.assertEqual(ai.courseName, "马克思主义基本原理、大学物理（上）")
-        ai.shutdown()
-
         # Known courses survive a restart (QSettings).
         import ui.controller as ctl
 

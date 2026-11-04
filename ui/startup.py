@@ -42,7 +42,6 @@ class StartupLoader(QObject):
         self._warnings: list[str] = []
         self.controller = None
         self.tray = None
-        self.ai = None
         self.main_window: QObject | None = None
         self._component: QQmlComponent | None = None
         self._incubator: _Incubator | None = None
@@ -93,12 +92,6 @@ class StartupLoader(QObject):
         self.tray = Tray(self._app, self.controller, ROOT_DIR / "assets" / "learning_plus.png")
         self.tray.showRequested.connect(self.show_main)
         self._engine.rootContext().setContextProperty("tray", self.tray)
-        # Local AI tutor ("AI 讲解" page). Separate from the task worker; see ui/localai.py.
-        from ui.assistant import LocalAI
-
-        self.ai = LocalAI(self.controller, parent=self._app)
-        self.ai.toast.connect(self.controller.toast)
-        self._engine.rootContext().setContextProperty("ai", self.ai)
         QTimer.singleShot(0, self._check_runtime)
 
     def _check_runtime(self) -> None:

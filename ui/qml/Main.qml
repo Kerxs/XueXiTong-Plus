@@ -47,7 +47,7 @@ ApplicationWindow {
         controller.updater.checkOnStartup()
     }
 
-    function openSettings() { window.page = 2 }
+    function openSettings() { window.page = 1 }
 
     // Hidden to the tray or minimized: nothing on screen to animate or play.
     readonly property bool onScreen: window.visible && window.visibility !== Window.Minimized
@@ -262,7 +262,6 @@ ApplicationWindow {
                             Repeater {
                                 model: [
                                     { glyph: "", label: "运行面板" },
-                                    { glyph: "", label: "AI 讲解" },
                                     { glyph: "", label: "设置" }
                                 ]
                                 delegate: Rectangle {
@@ -296,12 +295,12 @@ ApplicationWindow {
                                         }
                                         // Dot on 设置: unsaved changes or account still missing.
                                         Rectangle {
-                                            visible: index === 2 && (controller.dirty || !window.accountConfigured)
+                                            visible: index === 1 && (controller.dirty || !window.accountConfigured)
                                             width: 7; height: 7; radius: 4
                                             color: window.accountConfigured ? Theme.accent : Theme.warning
                                             Layout.rightMargin: 12
                                             SequentialAnimation on scale {
-                                                running: index === 2 && !window.accountConfigured && Theme.loopMotion
+                                                running: index === 1 && !window.accountConfigured && Theme.loopMotion
                                                 loops: Animation.Infinite
                                                 NumberAnimation { to: 1.5; duration: 700; easing.type: Easing.InOutSine }
                                                 NumberAnimation { to: 1.0; duration: 700; easing.type: Easing.InOutSine }
@@ -381,15 +380,6 @@ ApplicationWindow {
                 }
                 PageSlot {
                     pageIndex: 1
-                    // Loaded only when the local AI object exists (test harnesses build the window without it).
-                    Loader {
-                        anchors.fill: parent
-                        active: typeof ai !== "undefined"
-                        sourceComponent: AssistantPage {}
-                    }
-                }
-                PageSlot {
-                    pageIndex: 2
                     SettingsPage {
                         anchors.fill: parent
                         onUpdateRequested: window.showUpdates()

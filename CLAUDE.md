@@ -23,13 +23,6 @@
 - 安装程序末尾追加的是 `packaging/make_payload.py` 生成的 LZMA zip（比 Deflate 小约四分之一）；单独发布的免安装 zip 仍用 Deflate，因为 Windows 资源管理器打不开 LZMA zip。`setup.spec` 必须保留 `lzma` 隐式导入。
 - 性能：日志超过上限时只删最前面的行（不要改回整表重置，那会让日志面板每秒重建所有行）；`Theme.onScreen`（主窗口隐藏到托盘或最小化时为 false）让无限循环动画用 `Theme.loopMotion` 停下，视频预览也在最小化时释放、恢复后按任务进度重新打开。
 - 设置页的界面偏好（主题、动画、启动动画、运行结束提醒、自动检查更新、关闭到托盘）都存 QSettings；`Theme.motion` 为 false 时所有 `Theme.fast/normal/slow` 变成 0，循环动画也停止。
-- `ui/localai.py` + `ui/assistant.py` + `ui/qml/AssistantPage.qml`：“AI 讲解”页，本地 GGUF 模型（llama.cpp 的 `llama-server`）讲解题目。
-  - 边界：输出只在这个页面里给用户看；**不写回任务进程、不进入 `config.ini` 的 `[tiku]`、不参与任何自动作答或提交**。设置存 `%APPDATA%\ChaoxingDesktop\local_ai.json`，审核历史存 `ai_history.json`。不下载模型。
-  - 人工审核：每条结果先是“待审核”；只有用户标记“采纳”的结果能复制（`copyAnswer` 会拒绝其他状态）；可写审核备注。
-  - 两种模式：本机启动 llama-server（自动检测：设置路径 → PATH → 常见安装目录，运行 `--version`），或连接已运行的 OpenAI 兼容服务。参数：模型 / mmproj 路径、端口、上下文、GPU 层数、线程、温度、最大 token、额外参数。用 `/health` 等待模型加载，`/v1/chat/completions` 流式推理；停止时结束整个进程树。
-  - 题目来源：当前章节检测（来自运行面板的预览数据，自动带上识别到的课程和章节）、手动粘贴（自动拆出题干和选项）、图片（需要 mmproj，多模态）。
-  - 测试：`tests/test_localai.py` 用 `tests/fake_llama_server.py` 模拟 llama-server，覆盖检测、启动、加载等待、连接测试、流式推理、错误、崩溃退出、审核门槛。
-- `ui/advanced.py` + `ui/qml/AdvancedOptions.qml`：设置页“高级选项”，把 config.ini 里基本设置没覆盖的键（题库 provider 及各题库参数、提交与覆盖率、查题间隔、重做、判断题词表、通知推送）做成控件。字段表在 `advanced.GROUPS`，值按 config.ini 的字符串存取，随“保存”一起写回；文件里没有的键只有改过默认值才会写入。新增 worker 读取的配置键时在这里加字段，`tests/test_advanced.py` 会检查 provider 名在 `api/answer.py` / `api/notification.py` 中存在。
 - `ui/localmodels.py`：高级选项里“自动检测本机模型”。候选端口 = 常见默认端口（llama.cpp 8080、Ollama 11434、LM Studio 1234、vLLM 8000、5000/5001）+ 当前接口地址的端口 + 本机所有监听端口；对每个端口请求 `http://127.0.0.1:<端口>/v1/models`（不走代理，并发、短超时）。监听端口要同时问 `netstat` 和 PowerShell `Get-NetTCPConnection`：实测有 llama-server 只有后者能看到，状态列也可能是空的/本地化的，所以按“远端端口为 0”判断监听。llama.cpp 返回的模型名是 .gguf 路径，取文件名作为模型名称。
 - `ui/videoproxy.py`：视频预览的本地代理（只监听 127.0.0.1，只代理已登记的 `*.chaoxing.com` / `*.cldisk.com` 地址；视频 CDN 实际在 `s1/s2.cldisk.com`）。WebView2 的 `loadHtml()` 实际是 data: URL，CDN 收不到学习通的 Referer 会拒绝视频；现在预览页面和视频都由代理提供，代理转发时带上 Referer 并透传 Range。
 - `api/pause.py`：暂停 / 继续。GUI 暂停时创建 `%APPDATA%\ChaoxingDesktop\pause.flag`（路径经环境变量 `CHAOXING_PAUSE_FILE` 传给 worker），继续时删除。worker 在 `process_job` 开头和视频循环里调用 `wait_if_paused()`，视频循环把等待的秒数加到 `last_iter`，所以暂停时间不算观看时长、继续后进度不会跳。不要改成挂起进程：那样恢复后会把暂停时间算进进度。开始、停止、任务结束和退出时都会清掉标记。
@@ -54,7 +47,7 @@
 GUI 启动 worker 时设置 `CHAOXING_DESKTOP_PREVIEW=1`（以及 `PYTHONUNBUFFERED=1`）。`api/base.py` 通过标准输出发送两种事件行，`ui/output_parser.py` 解析，不会进入普通日志：
 
 - `__CX_VIDEO_PREVIEW__{"source","title"}`：获取视频状态后发送。`ui/controller.py` 生成静音、无控件的 HTML，交给 `VideoView.qml` 里的 WebView。Windows 构建使用 Qt WebView 的 native/WebView2 后端，运行机器需要 WebView2 Runtime。WebView2 后端不支持 `loadHtml` 的 base URL（页面按 `about:blank` 处理）。
-- `__CX_WORK_PREVIEW__{...}`：`study_work` 填好答案、提交前发送 `phase=filled`（题目、选项、所填答案、来源、覆盖率），提交后发送 `submitted` / `saved` / `failed`。由 `_emit_work_preview` 输出，异常全部吞掉，不影响答题流程。题目一读取到就先发 `phase=questions`（答案未填，界面显示“查找中”，AI 讲解可立即使用），不必等查找答案结束。每题带 `source`（cover / random）和 `origin`（找到答案的来源：`tiku` 题库或 `ai` 大模型，来自各题库类的 `ORIGIN` 和 `Tiku.last_origins`），面板据此显示 题库匹配 / AI匹配 / 随机作答。答案缓存 `cache.json` 格式不变，来源另存在 `cache_origin.json`，旧缓存没有记录的按题库算。`WorkView.qml` 用 QML 原生绘制，不加载学习通网页。
+- `__CX_WORK_PREVIEW__{...}`：`study_work` 填好答案、提交前发送 `phase=filled`（题目、选项、所填答案、来源、覆盖率），提交后发送 `submitted` / `saved` / `failed`。由 `_emit_work_preview` 输出，异常全部吞掉，不影响答题流程。题目一读取到就先发 `phase=questions`（答案未填，界面显示“查找中”），不必等查找答案结束。每题带 `source`（cover / random）和 `origin`（找到答案的来源：`tiku` 题库或 `ai` 大模型，来自各题库类的 `ORIGIN` 和 `Tiku.last_origins`），面板据此显示 题库匹配 / AI匹配 / 随机作答。答案缓存 `cache.json` 格式不变，来源另存在 `cache_origin.json`，旧缓存没有记录的按题库算。`WorkView.qml` 用 QML 原生绘制，不加载学习通网页。
 
 视频预览地址必须来自学习通视频状态响应并通过现有域名检查。真实课程画面尚未用用户账号验证，若调整该流程，需要分别检查无可用地址、加载失败和任务结束时的面板状态。
 
