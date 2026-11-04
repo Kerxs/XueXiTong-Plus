@@ -1,32 +1,34 @@
 <p align="center">
-  <img src="assets/learning_plus.png" width="96" alt="学习通PLUS 图标">
+  <img src="assets/learning_plus.png" width="96" alt="学习通 PLUS 图标">
 </p>
 
-<h1 align="center">学习通PLUS</h1>
+<h1 align="center">学习通 PLUS</h1>
 
 <p align="center">
-  超星学习通桌面客户端 · 基于开源项目 <a href="https://github.com/Samueli924/chaoxing">Samueli924/chaoxing</a>
+  超星学习通 Windows 桌面客户端 + 安卓手机版 · 基于开源项目 <a href="https://github.com/Samueli924/chaoxing">Samueli924/chaoxing</a>
   <br>
   <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/Kerxs/XueXiTong-Plus?color=2563eb&label=version" alt="最新版本"></a>
-  <img src="https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0f172a" alt="Windows 10 / 11">
+  <img src="https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20%C2%B7%20Android%207%2B-0f172a" alt="Windows 10 / 11 · Android 7+">
   <img src="https://img.shields.io/badge/license-GPL--3.0-13865a" alt="GPL-3.0">
 </p>
 
 <p align="center">
-  <img src="docs/media/splash.gif" width="420" alt="启动动画">
+  <img src="docs/media/splash.gif" width="760" alt="启动动画：图标和“学习通 PLUS”逐字飞到左上角">
 </p>
 
 ---
 
 ## 一、软件介绍
 
-学习通PLUS 把原本的命令行工具做成了一个 Windows 桌面应用：所有配置都在界面里完成（包括原来要手改 `config.ini` 的题库、AI 和通知推送），首次启动的引导就能一次配好；运行状态、当前视频和章节检测实时可见。AI 既可以用本机模型（llama.cpp、Ollama、LM Studio 等，自动检测），也可以用 DeepSeek、通义千问、Kimi、智谱等云端服务（自动识别服务商、列出可用模型）。
+学习通 PLUS 把原本的命令行工具做成了 Windows 桌面应用和安卓手机应用：所有配置都在界面里完成（包括原来要手改 `config.ini` 的题库、AI 和通知推送），首次启动的引导就能一次配好；运行状态、当前视频和章节检测实时可见。自动完成的范围是 **视频（含音频）和章节检测**，其他内容（阅读、问卷、讨论等）会提醒你手动完成。AI 答题可以用 DeepSeek、通义千问、Kimi、智谱等云端服务（自动识别服务商、列出可用模型），电脑版还可以用本机模型（llama.cpp、Ollama、LM Studio 等，自动检测）。
+
+> 自动化不能保证 100% 成功（视频可能遇到验证码、网络或平台限制，章节检测可能答错），建议配置通知推送，出错或需要手动处理时能及时知道。
 
 <p align="center">
   <img src="docs/media/demo-light.gif" alt="运行演示" width="900">
 </p>
 
-> 截图和动图使用模拟数据录制（v1.2.0），不对应任何真实账号或课程。录制时没有真实视频，视频预览区域显示的是等待状态；实际使用时会显示当前课程视频，并与任务进度同步。
+> 截图和动图使用模拟数据录制（v1.2.2），不对应任何真实账号或课程。录制时没有真实视频，视频预览区域显示的是等待状态；实际使用时会显示当前课程视频，并与任务进度同步。
 
 ### 主要特性
 
@@ -38,15 +40,16 @@
   - **答题来源**：答题方式可选“不查找 / 题库 / AI 大模型 / 题库 + AI”，只显示所选来源需要填写的内容（TOKEN、接口地址、API Key、模型等，密钥默认隐藏）。
   - **本机模型**：“自动检测本机模型”找到本机运行的 llama.cpp、Ollama、LM Studio、vLLM 等（包括非默认端口），一键填好接口地址和模型名称；本机服务不需要 Key，也不走代理。
   - **云端模型**：常用服务一键填写接口地址（DeepSeek、通义千问、Kimi、智谱 GLM、豆包、硅基流动、腾讯混元、百度千帆、OpenAI、OpenRouter），任意地址都能自动识别服务商；填好 API Key 后“获取模型列表”，搜索并点选要用的模型。
-  - **答题 / 通知推送**：提交与覆盖率（默认 75%）、查题间隔、答错重做、判断题“正确 / 错误”的写法；Server酱、Qmsg酱、Bark、Telegram 推送。开始运行前会检查必填项。
+  - **答题 / 通知推送**：提交与覆盖率（默认 75%）、查题间隔、答错重做、判断题“正确 / 错误”的写法；Server酱、Qmsg酱、Bark、Telegram 推送（手机版默认用本机通知）。开始运行前会检查必填项。
 - **后台运行**：关闭窗口时询问“后台运行”还是“直接退出”，可以勾选“以后都这样”（之后在“设置 → 运行”里修改）；后台运行时留在系统托盘，任务继续，托盘菜单可以显示窗口、开始/停止任务、退出。
 - **课程选择**：不填写课程 ID 时，运行后会弹出课程列表供勾选。
 - **Fluent 风格界面**：浅色 / 深色 / 跟随系统，全程动画过渡；自绘标题栏（最小化 / 最大化 / 关闭都有动画，拖动移动、双击最大化，边缘可调整大小）。窗口最小化或隐藏到托盘时停止动画、释放视频预览，日志很长时也保持流畅。
 - **启动画面**：程序在后台加载配置和界面，加载完成后图标和“学习通 PLUS”逐字飞到左上角（首次启动时飞到引导页）。
-- **首次启动引导**：欢迎 → 免责声明 → 账号 → 高级设置（答题来源、答题、通知推送，与“设置 → 高级选项”相同）→ 开始使用；账号和高级设置都可以稍后再配置。引导内容更新后会重新显示一次。
+- **首次启动引导**：欢迎 → 免责声明 → 账号 → 高级设置（答题来源、答题、通知推送，与“设置 → 高级选项”相同）→ 开始使用（说明自动化不能保证 100% 成功，没配置推送时建议配置）；账号和高级设置都可以稍后再配置。引导内容更新后会重新显示一次。
 - **自制安装程序**：按当前用户安装，不需要管理员权限，支持升级；会检查 WebView2 运行时，缺少时从微软官网下载并校验签名后安装。卸载程序与安装程序同样是向导样式，卸载时默认清除账号数据。安装后约 220 MB。
 - **联网更新**：从本仓库的 GitHub Releases 检查新版本，下载后校验 SHA-256 再安装。
 - **数据与隐私**：配置、cookies 和日志只保存在本机 `%APPDATA%\ChaoxingDesktop`；设置里可以一键清除账号数据和运行日志，界面和日志不显示本机路径。
+- **安卓手机版（测试版）**：与电脑版版本号同步、任务逻辑相同，界面和动画一致；设置是二级菜单，支持识别课程、检查更新、cookies 导入、本机通知和数据与隐私；“权限设置”引导你允许通知、关闭电池优化、打开自启动，息屏后任务继续运行。
 
 ### 截图
 
@@ -54,17 +57,31 @@
 | --- | --- |
 | ![运行面板](docs/media/dashboard-quiz-light.png) | ![深色模式](docs/media/dashboard-quiz-dark.png) |
 
+| 其他内容提醒（没有配置推送时） | 关闭窗口：后台运行 / 直接退出 |
+| --- | --- |
+| ![其他内容提醒](docs/media/manual-popup.png) | ![关闭窗口](docs/media/close-choice.png) |
+
 | 首次启动引导 · 免责声明 | 首次启动引导 · 高级设置 |
 | --- | --- |
 | ![免责声明](docs/media/onboarding-disclaimer.png) | ![高级设置](docs/media/onboarding-advanced.png) |
 
-| 高级选项（云端模型 · 常用服务） | 卸载程序 |
+| 首次启动引导 · 开始使用 | 高级选项（答题来源 · 云端模型） |
 | --- | --- |
-| ![高级选项](docs/media/settings-advanced.png) | ![卸载程序](docs/media/uninstaller.png) |
+| ![开始使用](docs/media/onboarding-finish.png) | ![高级选项](docs/media/settings-advanced.png) |
 
 | 安装程序 · 欢迎 | 安装程序 · 选项 |
 | --- | --- |
 | ![安装程序欢迎页](docs/media/installer-welcome.png) | ![安装程序选项页](docs/media/installer-options.png) |
+
+| 卸载程序 · 确认 | 卸载程序 · 选项 |
+| --- | --- |
+| ![卸载程序](docs/media/uninstaller.png) | ![卸载选项](docs/media/uninstaller-options.png) |
+
+**安卓手机版**
+
+| 运行面板 | 设置 | 权限设置 |
+| --- | --- | --- |
+| <img src="docs/media/phone-run.png" width="260" alt="手机运行面板"> | <img src="docs/media/phone-settings.png" width="260" alt="手机设置"> | <img src="docs/media/phone-permissions.png" width="260" alt="手机权限设置"> |
 
 ---
 
@@ -90,7 +107,7 @@
 2. **免责声明**：阅读声明，并在输入框中完整写一遍，内容一致后才能继续。
 3. **账号**：填写学习通账号和密码，或开启 cookies 登录（把 `cookies.txt` 放入配置目录）。暂时不想填可以点“稍后配置”，之后在 **设置 → 账号** 中填写；没配置前运行面板顶部会一直提醒。
 4. **高级设置**：依次设置答题来源、答题和通知推送（做法见下面的“配置答题来源”）。缺少必填项时底部会提示；可以点“稍后配置”，之后在 **设置 → 高级选项** 中修改。
-5. **开始使用**：进入运行面板。
+5. **开始使用**：确认自动化不能保证 100% 成功的说明（没有配置推送时会建议配置），进入运行面板。
 
 ### 3. 运行任务
 
@@ -123,7 +140,7 @@
 
 ### 6. 卸载
 
-在 Windows **设置 → 应用** 中找到 学习通PLUS 卸载，或运行安装目录中的 `学习通PLUS.exe --uninstall`。卸载向导依次为 确认 → 卸载选项 → 正在卸载 → 完成；默认勾选“清除账号数据（账号、密码、cookies）”，也可以选择删除全部配置、日志和界面设置。
+在 Windows **设置 → 应用** 中找到 学习通 PLUS 卸载，或运行安装目录中的 `学习通PLUS.exe --uninstall`。卸载向导依次为 确认 → 卸载选项 → 正在卸载 → 完成；默认勾选“清除账号数据（账号、密码、cookies）”，也可以选择删除全部配置、日志和界面设置。
 
 ### 从源码构建
 
