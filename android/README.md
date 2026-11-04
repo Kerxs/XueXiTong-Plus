@@ -23,15 +23,18 @@ Kotlin + Jetpack Compose 界面，用 [Chaquopy](https://chaquo.com/chaquopy/) �
 
 ## 构建
 
-需要 JDK 17、Android SDK（compileSdk 35），以及 **Python 3.13**（Chaquopy 构建时用）。默认使用 `..\.build\python-3.13\python.exe`（桌面版 `build_windows.ps1` 准备的便携 Python），也可以在 `gradle.properties` 里设置 `xxtplus.buildPython`。
+需要 JDK 17、Android SDK（compileSdk 35），以及完整安装的 **Python 3.13**（Chaquopy 构建时用，要有 venv；默认用 `py -3.13` 查找，也可以在 `gradle.properties` 里设置 `xxtplus.buildPython`）。`..\.build` 里的便携 Python 是嵌入版，没有 venv，不能用。
 
-用 Android Studio 打开 `android/` 目录即可（会自动下载 Gradle 8.11.1）。命令行：
+Android Gradle 插件拒绝含中文的项目路径（`学习通PLUS`），所以通过 ASCII 目录联接构建：
 
 ```powershell
-cd android
-gradle wrapper        # 第一次：生成 gradlew 和 gradle-wrapper.jar
-.\gradlew assembleDebug
+cmd /c mklink /J D:\Claude\xxtplus D:\Claude\学习通PLUS   # 只需一次
+cd D:\Claude\xxtplus\android
+$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17.0.21.9-hotspot"
+.\gradlew.bat assembleDebug
 ```
+
+`local.properties` 写 `sdk.dir`（不提交）。Android Studio 也要从联接路径打开。
 
 APK 在 `app/build/outputs/apk/debug/`。release 构建暂时用 debug 签名，只用于侧载测试。
 

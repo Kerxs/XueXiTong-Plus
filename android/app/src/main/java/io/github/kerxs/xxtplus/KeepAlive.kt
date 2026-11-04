@@ -20,6 +20,24 @@ object KeepAlive {
 
     data class Vendor(val id: String, val name: String, val steps: List<String>)
 
+    /** What happens when each setting is left off; shown on the step and before leaving the guide. */
+    const val CONSEQUENCE_NOTIFY = "不允许通知：看不到常驻通知，无法在通知栏暂停 / 停止；需要你选择课程或确认时也收不到提醒，任务会一直停在等待中。"
+    const val CONSEQUENCE_BATTERY = "不关闭电池优化：息屏几分钟后系统进入省电休眠，网络被断开、计时暂停，视频进度不再上报，任务可能被系统直接停止。"
+    const val CONSEQUENCE_AUTOSTART = "不设置自启动 / 后台运行：手机锁屏、清理后台或内存紧张时会直接结束本应用，任务中断，需要重新打开应用点“开始运行”。"
+
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("app", Context.MODE_PRIVATE)
+
+    /** Vendor switches cannot be read by apps: the user confirms them. */
+    fun autostartConfirmed(ctx: Context) = prefs(ctx).getBoolean("autostart_confirmed", false)
+    fun setAutostartConfirmed(ctx: Context, value: Boolean) = prefs(ctx).edit().putBoolean("autostart_confirmed", value).apply()
+
+    /** (setting, consequence) for every keep-alive setting that is not done yet. */
+    fun missing(ctx: Context): List<Pair<String, String>> = buildList {
+        if (!hasNotificationPermission(ctx)) add("允许通知" to CONSEQUENCE_NOTIFY)
+        if (!isIgnoringBatteryOptimizations(ctx)) add("关闭电池优化" to CONSEQUENCE_BATTERY)
+        if (!autostartConfirmed(ctx)) add("自启动与后台运行" to CONSEQUENCE_AUTOSTART)
+    }
+
     fun isIgnoringBatteryOptimizations(ctx: Context): Boolean =
         ctx.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName)
 

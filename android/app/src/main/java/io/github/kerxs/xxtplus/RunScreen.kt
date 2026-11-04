@@ -110,10 +110,11 @@ fun RunScreen(snackbar: SnackbarHostState, openSettings: () -> Unit, openKeepAli
                 modifier = Modifier.weight(1f),
             ) { Text("停止") }
         }
-        if (!KeepAlive.isIgnoringBatteryOptimizations(ctx)) {
+        val missing = KeepAlive.missing(ctx)
+        if (missing.isNotEmpty()) {
             Spacer(Modifier.size(8.dp))
             Card(Modifier.fillMaxWidth().clickable { openKeepAlive() }) {
-                Text("还没有关闭电池优化，息屏后任务可能被系统停止。点这里设置后台保活。",
+                Text("后台保活未完成（${missing.joinToString("、") { it.first }}），息屏或切到后台后任务可能被系统停止。点这里设置。",
                     Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall, color = Colors.warning)
             }
         }

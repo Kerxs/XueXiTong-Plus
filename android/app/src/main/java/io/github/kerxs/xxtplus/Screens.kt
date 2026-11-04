@@ -2,6 +2,7 @@ package io.github.kerxs.xxtplus
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,8 +16,10 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -34,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -94,14 +98,16 @@ fun KeepAliveContent() {
     val ignoring = remember(tick) { KeepAlive.isIgnoringBatteryOptimizations(ctx) }
     val notifications = remember(tick) { hasNotificationPermission(ctx) }
     val vendor = remember { KeepAlive.vendor() }
-    val askNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    var autostart by remember { mutableStateOf(KeepAlive.autostartConfirmed(ctx)) }
+    val askNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }  // re-read on resume
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("视频要按真实时长上报进度，任务会运行很久。下面几项能让它在息屏和切到后台时继续运行；运行时建议连接充电器。",
+        Text("视频要按真实时长上报进度，任务会运行很久。请完成下面三项，任务才能在息屏和切到后台时继续运行；运行时建议连接充电器。",
             style = MaterialTheme.typography.bodyMedium)
         StepCard(
             title = "1. 允许通知",
-            body = "运行时会显示常驻通知（可在通知里暂停 / 停止），这是系统允许后台长时间运行的前提。",
+            body = "运行时显示常驻通知（可在通知里暂停 / 停止），需要选择课程或确认时提醒你。",
+            consequence = KeepAlive.CONSEQUENCE_NOTIFY,
             done = notifications,
             action = "允许通知",
             onAction = {
@@ -111,15 +117,19 @@ fun KeepAliveContent() {
         )
         StepCard(
             title = "2. 关闭电池优化",
-            body = "让系统在息屏后不限制本应用的网络和计时。",
+            body = "让系统在息屏后不限制本应用的网络和计时。点按钮后在系统弹窗里选“允许”。",
+            consequence = KeepAlive.CONSEQUENCE_BATTERY,
             done = ignoring,
             action = "关闭电池优化",
             onAction = { KeepAlive.requestIgnoreBatteryOptimizations(ctx) },
         )
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("3. 自启动与后台运行（${vendor.name}）", style = MaterialTheme.typography.titleSmall)
-                Text("这些开关由手机厂商提供，应用无法替你打开，请按下面的步骤手动设置：",
+                Row {
+                    Text("3. 自启动与后台运行", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                    StatusText(autostart, doneText = "已确认")
+                }
+                Text("${vendor.name}：这些开关由手机厂商提供，应用无法替你打开，也无法检测是否已打开。请按下面的步骤手动设置：",
                     style = MaterialTheme.typography.bodySmall)
                 vendor.steps.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -128,6 +138,13 @@ fun KeepAliveContent() {
                 }
                 Text("如果按钮打开的不是对应页面，请在系统设置里按上面的路径查找（不同系统版本位置略有不同）。",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(Modifier.fillMaxWidth().clickable {
+                    autostart = !autostart; KeepAlive.setAutostartConfirmed(ctx, autostart)
+                }, verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = autostart, onCheckedChange = null)
+                    Text("我已按上面的步骤设置好", style = MaterialTheme.typography.bodyMedium)
+                }
+                if (!autostart) Consequence(KeepAlive.CONSEQUENCE_AUTOSTART)
             }
         }
         Text("即使都设置好，也不能保证所有机型都不会被系统停止。被停止后重新点“开始运行”即可，学习通会保留已看的进度。",
@@ -136,16 +153,29 @@ fun KeepAliveContent() {
 }
 
 @Composable
-private fun StepCard(title: String, body: String, done: Boolean, action: String, onAction: () -> Unit) {
+private fun StatusText(done: Boolean, doneText: String = "已完成") {
+    Text(if (done) doneText else "未设置", color = if (done) Colors.success else Colors.warning,
+        style = MaterialTheme.typography.labelMedium)
+}
+
+@Composable
+private fun Consequence(text: String) {
+    Text(text, color = Colors.danger, style = MaterialTheme.typography.bodySmall)
+}
+
+@Composable
+private fun StepCard(title: String, body: String, consequence: String, done: Boolean, action: String, onAction: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row {
                 Text(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                Text(if (done) "已完成" else "未设置", color = if (done) Colors.success else Colors.warning,
-                    style = MaterialTheme.typography.labelMedium)
+                StatusText(done)
             }
             Text(body, style = MaterialTheme.typography.bodySmall)
-            if (!done) Button(onClick = onAction) { Text(action) }
+            if (!done) {
+                Consequence(consequence)
+                Button(onClick = onAction) { Text(action) }
+            }
         }
     }
 }
@@ -195,9 +225,33 @@ fun OnboardingScreen(onDone: () -> Unit) {
         else -> true
     }
 
+    var unfinished by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+
     fun next() = scope.launch {
         SettingsModel.save(ctx)
-        if (step < steps.size - 1) step++ else onDone()
+        when {
+            step < steps.size - 1 -> step++
+            KeepAlive.missing(ctx).isNotEmpty() -> unfinished = KeepAlive.missing(ctx)
+            else -> onDone()
+        }
+    }
+
+    if (unfinished.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { unfinished = emptyList() },
+            title = { Text("后台保活还没有完成") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("以下设置还没有完成，可能导致：", style = MaterialTheme.typography.bodyMedium)
+                    unfinished.forEach { (_, consequence) -> Consequence(consequence) }
+                    Text("之后可以在“后台保活”页面继续设置。", style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = { Button(onClick = { unfinished = emptyList() }) { Text("去完成设置") } },
+            dismissButton = {
+                TextButton(onClick = { unfinished = emptyList(); onDone() }) { Text("我已了解后果，仍然开始") }
+            },
+        )
     }
 
     Column(Modifier.fillMaxSize().systemBarsPadding().padding(16.dp)) {
@@ -209,7 +263,7 @@ fun OnboardingScreen(onDone: () -> Unit) {
             when (step) {
                 0 -> {
                     Text("欢迎使用学习通PLUS 手机版", style = MaterialTheme.typography.titleMedium)
-                    Text("接下来几步完成：阅读免责声明、填写学习通账号、选择章节检测的答题来源、配置推送服务，以及设置后台保活。之后都可以在“设置”里修改。")
+                    Text("接下来几步完成：阅读免责声明、填写学习通账号、选择章节检测的答题来源、配置推送服务，以及设置后台保活（允许通知、关闭电池优化、自启动与后台运行）。之后都可以在“设置”和“后台保活”里修改。")
                 }
                 1 -> {
                     Card(Modifier.fillMaxWidth()) {

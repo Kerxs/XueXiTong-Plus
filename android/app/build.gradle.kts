@@ -59,12 +59,9 @@ android {
 chaquopy {
     defaultConfig {
         version = "3.13"
-        val configured = providers.gradleProperty("xxtplus.buildPython").orNull
-        val portable = File(repoRoot, ".build/python-3.13/python.exe")
-        when {
-            configured != null -> buildPython(configured)
-            portable.exists() -> buildPython(portable.absolutePath)
-        }
+        // Default: Chaquopy finds Python 3.13 itself (`py -3.13` on Windows). The embeddable
+        // Python in ..\.build cannot be used: it has no venv module.
+        providers.gradleProperty("xxtplus.buildPython").orNull?.let { buildPython(it) }
         pip {
             // requirements-desktop.txt minus:
             //  - openai: needs pydantic-core / jiter, which have no Android builds; a small
