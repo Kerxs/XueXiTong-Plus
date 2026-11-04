@@ -76,7 +76,7 @@ class InstallWorker(QThread):
         self.progressed.emit(0.0, "检查运行中的程序")
         running = winsetup.running_app_processes()
         if running:
-            raise RuntimeError("学习通PLUS 正在运行，请先关闭程序（包括正在运行的任务）后重试。")
+            raise RuntimeError("学习通 PLUS 正在运行，请先关闭程序（包括正在运行的任务）后重试。")
 
         target.mkdir(parents=True, exist_ok=True)
         # Remove the previous version's files so nothing stale is left behind.
@@ -149,7 +149,7 @@ class Installer(QObject):
             self._payload_ok = False
 
     version = Property(str, lambda self: VERSION, constant=True)
-    appName = Property(str, lambda self: winsetup.APP_NAME, constant=True)
+    appName = Property(str, lambda self: winsetup.DISPLAY_NAME, constant=True)
     iconUrl = Property(QUrl, lambda self: QUrl.fromLocalFile(str(ROOT / "assets" / "learning_plus.png")), constant=True)
     requiredMb = Property(int, lambda self: self._size_mb, constant=True)
     payloadOk = Property(bool, lambda self: self._payload_ok, constant=True)

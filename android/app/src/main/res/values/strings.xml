@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">学习通PLUS</string>
+    <string name="app_name">学习通 PLUS</string>
     <string name="channel_task">任务运行</string>
     <string name="channel_task_desc">任务运行时常驻通知，保证息屏后继续运行</string>
     <string name="channel_alert">运行提醒</string>

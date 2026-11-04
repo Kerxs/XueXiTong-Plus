@@ -42,7 +42,8 @@ from ui.output_parser import (
     WorkPreviewEvent,
 )
 
-APP_NAME = "学习通PLUS"
+APP_NAME = "学习通PLUS"          # identity — do not change
+DISPLAY_NAME = "学习通 PLUS"     # shown to users
 APP_VERSION = "1.2.1"
 # Bump whenever the 开始引导 changes: everyone who finished an older guide sees it again.
 # 1: 欢迎 / 免责声明 / 账号 / 开始使用   2: + 答题设置 (1.1.7)
@@ -410,7 +411,7 @@ class AppController(QObject):
     dirty = Property(bool, lambda self: self._dirty, notify=dirtyChanged)
     speedOptions = Property("QStringList", lambda self: SPEED_OPTIONS, constant=True)
     version = Property(str, lambda self: APP_VERSION, constant=True)
-    appName = Property(str, lambda self: APP_NAME, constant=True)
+    appName = Property(str, lambda self: DISPLAY_NAME, constant=True)
     dataDir = Property(str, lambda self: str(DATA_DIR), constant=True)
     iconUrl = Property(QUrl, lambda self: QUrl.fromLocalFile(str(ROOT_DIR / "assets" / "learning_plus.png")), constant=True)
 

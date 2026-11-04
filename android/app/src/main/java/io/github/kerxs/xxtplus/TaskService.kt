@@ -170,7 +170,7 @@ class TaskService : Service() {
             }
             "progress" -> progress = "${event.optString("name")}  ${event.optInt("percent")}%"
             "prompt" -> alert("需要你确认", event.optString("text"))
-            "courselist" -> alert("请选择要学习的课程", "打开学习通PLUS选择课程后继续")
+            "courselist" -> alert("请选择要学习的课程", "打开学习通 PLUS 选择课程后继续")
             "notify" -> pushNotification(event.optString("text"))
         }
         val now = System.currentTimeMillis()
@@ -291,7 +291,7 @@ class TaskService : Service() {
         lastPush = System.currentTimeMillis()
         val n = Notification.Builder(this, CHANNEL_ALERT)
             .setSmallIcon(R.drawable.ic_notify)
-            .setContentTitle("学习通PLUS")
+            .setContentTitle("学习通 PLUS")
             .setContentText(firstLine)
             .setStyle(Notification.BigTextStyle().bigText(text.take(1500)))
             .setAutoCancel(true)

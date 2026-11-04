@@ -19,7 +19,7 @@ BaseDialog {
         Text {
             Layout.fillWidth: true
             text: dialog.st === "ready"
-                ? "安装程序会关闭学习通PLUS 并升级到 " + dialog.updater.latestVersion + "，你的配置和账号不受影响。"
+                ? "安装程序会关闭学习通 PLUS 并升级到 " + dialog.updater.latestVersion + "，你的配置和账号不受影响。"
                 : "当前版本 " + controller.version + "，新版本 " + dialog.updater.latestVersion
                   + (dialog.updater.downloadMb > 0 ? "（约 " + dialog.updater.downloadMb + " MB）" : "") + "。"
             color: Theme.muted

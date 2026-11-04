@@ -107,7 +107,7 @@ fun SettingsScreen(snackbar: SnackbarHostState, reopenGuide: () -> Unit) {
         Section("update", "检查更新", Icons.Filled.SystemUpdate) {
             "当前 ${Updater.currentVersion(ctx)}" + if (Updater.state == "available") " · 有新版本" else ""
         },
-        Section("about", "关于", Icons.Filled.Info) { "学习通PLUS ${Updater.currentVersion(ctx)}" },
+        Section("about", "关于", Icons.Filled.Info) { "学习通 PLUS ${Updater.currentVersion(ctx)}" },
     )
 
     fun leave() {
@@ -330,7 +330,7 @@ private fun UpdatePage() {
     val ctx = LocalContext.current
     val c = X.colors
     val scope = rememberCoroutineScope()
-    XCard(Modifier.fillMaxWidth(), title = "学习通PLUS ${Updater.currentVersion(ctx)}", subtitle = "从 GitHub Releases 检查新版本，下载后校验 SHA-256 再安装") {
+    XCard(Modifier.fillMaxWidth(), title = "学习通 PLUS ${Updater.currentVersion(ctx)}", subtitle = "从 GitHub Releases 检查新版本，下载后校验 SHA-256 再安装") {
         SwitchRow("启动时自动检查更新", "有新版本时提示", UiPrefs.autoUpdate) { UiPrefs.autoUpdate = it; UiPrefs.save(ctx) }
         val status = when (Updater.state) {
             "checking" -> "正在检查…"
@@ -354,7 +354,7 @@ private fun AboutPage(reopenGuide: () -> Unit) {
     fun open(url: String) = runCatching {
         ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
-    XCard(Modifier.fillMaxWidth(), title = "学习通PLUS ${Updater.currentVersion(ctx)}", subtitle = "手机版") {
+    XCard(Modifier.fillMaxWidth(), title = "学习通 PLUS ${Updater.currentVersion(ctx)}", subtitle = "手机版") {
         Text("基于开源项目 Samueli924/chaoxing，遵循 GPL-3.0 协议，禁止用于盈利；与超星、学习通官方无任何关联。",
             color = c.text, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

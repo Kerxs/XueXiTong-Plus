@@ -179,22 +179,25 @@ ApplicationWindow {
     ResizeEdge { z: 60; edges: Qt.LeftEdge | Qt.BottomEdge; cursorShape: Qt.SizeBDiagCursor; x: 0; y: parent.height - grip; width: grip; height: grip }
     ResizeEdge { z: 60; edges: Qt.RightEdge | Qt.BottomEdge; cursorShape: Qt.SizeFDiagCursor; x: parent.width - grip; y: parent.height - grip; width: grip; height: grip }
 
-    // ---- splash hand-off: the splash logo moves from the screen centre to the nav-pane brand ----
+    // ---- splash hand-off: the splash logo moves from the screen centre to the brand ----
     // The splash (a separate window) was centred on the screen; this copy of its logo starts at
     // that same spot inside the main window, so when the splash card dissolves the logo stays
-    // put, then glides and shrinks onto the brand in the top-left. Icon and text move together.
-    // No flash on landing: during the flight the splash text ("学习通 PLUS", Black) dissolves into
-    // an exact copy of the brand title ("学习通PLUS", same font, lands at the same size/place), so
-    // when the real brand takes over in the same frame nothing changes on screen; only the
-    // subtitle then fades in. The target is taken from the shell's settled position (the shell
-    // itself slides in by 14 px, which used to make the logo land low and jump).
-    // (No subtitle under the brand: the user asked for 学习通课程助手 to be removed.)
+    // put, then glides and shrinks onto the brand: the nav-pane brand, or on a first start the
+    // guide's welcome icon and title. Icon and text move together.
+    // No twitch on landing:
+    //  * every brand image decodes the same 256 px texture with mipmaps, so the shrunken flying
+    //    icon and the real icon are sampled the same way (also sharp on 150 % / 200 % displays);
+    //  * the title copy is not scaled text: it flies on its own and animates its real font size
+    //    down to the target's, so it ends as native text at the target's exact position;
+    //  * the targets are followed live on every frame (window resize, entrance slides).
     readonly property bool splashIntro: typeof startup !== "undefined" && startup && startup.splashShown && Theme.motion
+    readonly property size brandTexture: Qt.size(256, 256)
     Item {
         id: introLogo
         z: 90
         visible: window.splashIntro && !introDone
         property bool introDone: false
+        property Text titleSource: brandTitle   // set in start(): nav brand title or the guide's welcome title
         transformOrigin: Item.TopLeft
         width: introRow.implicitWidth
         height: introRow.implicitHeight
@@ -203,9 +206,9 @@ ApplicationWindow {
             id: introRow
             spacing: 28
             Image {
+                id: introIcon
                 source: controller.iconUrl
-                sourceSize.width: 112
-                sourceSize.height: 112
+                sourceSize: window.brandTexture
                 width: 112
                 height: 112
                 smooth: true
@@ -218,7 +221,7 @@ ApplicationWindow {
                 height: introText.implicitHeight
                 transform: Translate { id: textShift }
                 Text {
-                    id: introText              // the splash wordmark
+                    id: introText              // the splash wordmark; fades out while the title copy fades in
                     anchors.verticalCenter: parent.verticalCenter
                     text: "学习通 PLUS"
                     color: Theme.text
@@ -226,17 +229,28 @@ ApplicationWindow {
                     font.pixelSize: 44
                     font.weight: Font.Black
                 }
-                Text {
-                    id: introTitle             // the brand title, sized to land at brandTitle's size
-                    anchors.verticalCenter: parent.verticalCenter
-                    opacity: 0
-                    text: brandTitle.text
-                    color: brandTitle.color
-                    font.family: brandTitle.font.family
-                    font.weight: brandTitle.font.weight
-                    font.pixelSize: brandTitle.font.pixelSize / Math.max(0.05, fly.toScale)
-                }
             }
+        }
+
+        // Targets are read live on every frame (not computed once at the start): the window may
+        // still be resized (restored size / maximised) and the shell or guide card still sliding in
+        // while the logo travels, and a precomputed spot then ends a few pixels off and jumps.
+        property Item iconTarget: brandIcon
+        property real fromX: 0
+        property real fromY: 0
+        property real prog: 0          // 0 → 1 with InOutCubic (flyAnim)
+        onProgChanged: follow()
+
+        function follow() {
+            const t = iconTarget.mapToItem(window.contentItem, 0, 0)
+            const k = iconTarget.width / 112
+            x = fromX + (t.x - fromX) * prog
+            y = fromY + (t.y - fromY) * prog
+            scale = 1 + (k - 1) * prog
+            // The wordmark (inside the scaled row) heads for the title's left / middle.
+            const title = titleSource.mapToItem(window.contentItem, 0, 0)
+            textShift.x = ((title.x - t.x) / k - introTextBox.x) * prog
+            textShift.y = ((title.y + titleSource.height / 2 - t.y) / k - (introTextBox.y + introTextBox.height / 2)) * prog
         }
 
         function start() {
@@ -244,55 +258,133 @@ ApplicationWindow {
             const s = window.screen
             const cx = (s ? s.virtualX + s.width / 2 : window.x + window.width / 2) - window.x
             const cy = (s ? s.virtualY + s.height / 2 : window.y + window.height / 2) - window.y - 12
-            // Settled positions: remove the shell's entrance offset (shellShift → 0).
-            const target = brandIcon.mapToItem(window.contentItem, 0, 0)
-            target.y -= shellShift.y
-            const k = brandIcon.width / 112
-            fly.fromX = cx - width / 2
-            fly.fromY = cy - height / 2
-            fly.toX = target.x
-            fly.toY = target.y
-            fly.toScale = k
-            // Move the text so the brand-title copy ends exactly on brandTitle (row coordinates, unscaled).
-            const title = brandTitle.mapToItem(window.contentItem, 0, 0)
-            title.y -= shellShift.y
-            fly.textDx = (title.x - target.x) / k - (introTextBox.x + introTitle.x)
-            fly.textDy = (title.y - target.y) / k - (introTextBox.y + introTitle.y)
-            fly.start()
+            // First start: the guide covers the window, so the logo lands on the welcome page's
+            // icon and title instead of the nav-pane brand behind it.
+            const onGuide = window.showGuide
+            iconTarget = onGuide ? guide.welcomeIconItem : brandIcon
+            titleSource = onGuide ? guide.welcomeTitleItem : brandTitle
+            fromX = cx - width / 2
+            fromY = cy - height / 2
+            prog = 0
+            follow()
+            // Title copy one character at a time — 学, 习, 通, P, L, U, S — each its own flight a little
+            // later than the one before, landing where the real title draws that character.
+            const full = titleSource.text
+            const k = iconTarget.width / 112
+            introTitles.fromSize = titleSource.font.pixelSize / k
+            introTitles.toSize = titleSource.font.pixelSize
+            const pieces = []
+            for (let i = 0; i < full.length; ++i) {
+                const ch = full.charAt(i)
+                if (ch.trim().length === 0) continue          // spaces only take up room
+                const before = full.substring(0, i)
+                pieces.push({ text: ch, fromOffset: fmFrom.advanceWidth(before), toOffset: fmTo.advanceWidth(before) })
+            }
+            introTitles.fromX = fromX + introTextBox.x
+            introTitles.fromY = fromY + (112 - fmFrom.height) / 2
+            introTitles.landed = 0
+            introTitles.opacity = 1
+            introTitles.pieces = pieces
+            flyAnim.start()
+            for (let i = 0; i < pieceRep.count; ++i) pieceRep.itemAt(i).go()
         }
 
         ParallelAnimation {
-            id: fly
-            property real fromX: 0
-            property real fromY: 0
-            property real toX: 0
-            property real toY: 0
-            property real toScale: 0.32
-            property real textDx: 0
-            property real textDy: 0
-            NumberAnimation { target: introLogo; property: "x"; from: fly.fromX; to: fly.toX; duration: 720; easing.type: Easing.InOutCubic }
-            NumberAnimation { target: introLogo; property: "y"; from: fly.fromY; to: fly.toY; duration: 720; easing.type: Easing.InOutCubic }
-            NumberAnimation { target: introLogo; property: "scale"; from: 1; to: fly.toScale; duration: 720; easing.type: Easing.InOutCubic }
-            NumberAnimation { target: textShift; property: "x"; from: 0; to: fly.textDx; duration: 720; easing.type: Easing.InOutCubic }
-            NumberAnimation { target: textShift; property: "y"; from: 0; to: fly.textDy; duration: 720; easing.type: Easing.InOutCubic }
-            // The wordmark becomes the brand title while it travels (not at the end).
+            id: flyAnim
+            NumberAnimation { target: introLogo; property: "prog"; from: 0; to: 1; duration: 720; easing.type: Easing.InOutCubic }
+            // The wordmark gives way to the title pieces while it travels.
             SequentialAnimation {
                 PauseAnimation { duration: 260 }
-                ParallelAnimation {
-                    NumberAnimation { target: introText; property: "opacity"; from: 1; to: 0; duration: 300; easing.type: Easing.InOutQuad }
-                    NumberAnimation { target: introTitle; property: "opacity"; from: 0; to: 1; duration: 300; easing.type: Easing.InOutQuad }
-                }
+                NumberAnimation { target: introText; property: "opacity"; from: 1; to: 0; duration: 300; easing.type: Easing.InOutQuad }
             }
-            onFinished: {
-                // Same frame: the real brand appears where the identical copy is, then the copy goes.
+        }
+    }
+    // The title copy, in pieces: native text whose font size animates (sharp and identical when
+    // it lands). Arrival order: the icon (720 ms), then 学, 习, 通, P, L, U, S one by one.
+    Item {
+        id: introTitles
+        z: 91
+        visible: introLogo.visible
+        property var pieces: []
+        property real fromX: 0
+        property real fromY: 0
+        property real fromSize: 44
+        property real toSize: 15
+        property int landed: 0
+        function pieceLanded() {
+            landed += 1
+            if (landed === pieces.length) {
+                // The real brand takes over: the icon in the same frame (identical), the title with a
+                // 100 ms cross-fade (separately drawn pieces vs one string differ by a hair).
+                introLogo.titleSource.opacity = 0
                 brandRow.opacity = 1
-                introLogo.introDone = true
+                titleHandoff.start()
+            }
+        }
+        SequentialAnimation {
+            id: titleHandoff
+            ParallelAnimation {
+                NumberAnimation { target: introLogo.titleSource; property: "opacity"; from: 0; to: 1; duration: 100 }
+                NumberAnimation { target: introTitles; property: "opacity"; from: 1; to: 0; duration: 100 }
+            }
+            ScriptAction { script: introLogo.introDone = true }
+        }
+        FontMetrics {                 // the title's font at the splash size (start positions)
+            id: fmFrom
+            font.family: introLogo.titleSource.font.family
+            font.weight: introLogo.titleSource.font.weight
+            font.pixelSize: introTitles.fromSize
+        }
+        FontMetrics {                 // ... and at its real size (landing positions)
+            id: fmTo
+            font.family: introLogo.titleSource.font.family
+            font.weight: introLogo.titleSource.font.weight
+            font.pixelSize: introTitles.toSize
+        }
+        Repeater {
+            id: pieceRep
+            model: introTitles.pieces
+            Text {
+                id: piece
+                required property var modelData
+                required property int index
+                // first character 120 ms after the icon starts, then each one 60 ms after the previous
+                readonly property int delay: 120 + index * 60
+                property real prog: 0
+                opacity: 0
+                text: modelData.text
+                color: introLogo.titleSource.color
+                font.family: introLogo.titleSource.font.family
+                font.weight: introLogo.titleSource.font.weight
+                font.pixelSize: introTitles.fromSize
+                x: introTitles.fromX + modelData.fromOffset
+                y: introTitles.fromY
+                onProgChanged: {
+                    // Live target: wherever the real title is right now (exact, unrounded).
+                    const title = introLogo.titleSource.mapToItem(window.contentItem, 0, 0)
+                    const sx = introTitles.fromX + modelData.fromOffset
+                    x = sx + (title.x + modelData.toOffset - sx) * prog
+                    y = introTitles.fromY + (title.y - introTitles.fromY) * prog
+                    font.pixelSize = introTitles.fromSize + (introTitles.toSize - introTitles.fromSize) * prog
+                }
+                function go() { pieceFly.start(); pieceFade.start() }
+                SequentialAnimation {
+                    id: pieceFly
+                    PauseAnimation { duration: piece.delay }
+                    NumberAnimation { target: piece; property: "prog"; from: 0; to: 1; duration: 720; easing.type: Easing.InOutCubic }
+                    ScriptAction { script: introTitles.pieceLanded() }
+                }
+                SequentialAnimation {
+                    id: pieceFade
+                    PauseAnimation { duration: 200 + piece.delay / 2 }
+                    NumberAnimation { target: piece; property: "opacity"; to: 1; duration: 300; easing.type: Easing.InOutQuad }
+                }
             }
         }
     }
     onVisibleChanged: {
-        if (visible && splashIntro && !introLogo.introDone && !fly.running) {
-            // Wait one frame so the layout (and a restored maximised size) has settled.
+        if (visible && splashIntro && !introLogo.introDone && !flyAnim.running) {
+            // Wait one frame so the window is laid out before the flight starts.
             introLogo.x = -10000
             Qt.callLater(introLogo.start)
         }
@@ -340,8 +432,7 @@ ApplicationWindow {
                         Image {
                             id: brandIcon
                             source: controller.iconUrl
-                            sourceSize.width: 36
-                            sourceSize.height: 36
+                            sourceSize: window.brandTexture
                             Layout.preferredWidth: 36
                             Layout.preferredHeight: 36
                             smooth: true
@@ -522,6 +613,7 @@ ApplicationWindow {
         objectName: "guide"
         anchors.fill: parent
         z: 10
+        brandHidden: window.splashIntro && !introLogo.introDone
         opacity: window.showGuide ? 1 : 0
         visible: opacity > 0.01
         Behavior on opacity { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
@@ -634,7 +726,7 @@ ApplicationWindow {
                 stopConfirm.close()
                 if (controller.statusKind === "done" || controller.statusKind === "error") {
                     if (!window.visible && window.trayObj)  // hidden in the tray: use a notification
-                        window.trayObj.notify("学习通PLUS", controller.statusKind === "done" ? "任务已全部完成" : "任务进程已退出，请查看运行日志")
+                        window.trayObj.notify(controller.appName, controller.statusKind === "done" ? "任务已全部完成" : "任务进程已退出，请查看运行日志")
                     else if (controller.alertOnFinish && !window.active)
                         window.alert(0)  // flash the taskbar button until the window is focused
                     toast.show(controller.statusKind === "done" ? "任务已全部完成" : "任务进程已退出，请查看运行日志",

@@ -92,7 +92,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\build_windows.ps1
 - 视频：倍速已失效，固定 1 倍速（`main.py` 强制；桌面和手机的倍速选项都显示“已失效”）。`Chaoxing.required_watch_ratio` 读取任务点的 `rt`（0.9 / 1），看到要求比例时立即上报，平台确认 `isPassed` 即结束。
 - AI 客户端超时 120 秒、重试 2 次（openai 默认 600 秒）。题库请求携带 TOKEN 时校验 HTTPS 证书；只有自建的 TikuAdapter 不校验。
 - 自动化范围：只自动完成视频（含音频）和章节检测（`main.AUTOMATED_JOB_TYPES`）。文档、阅读、直播以及解码器不认识的任务点（问卷、讨论、链接…，`decode._process_other_task`）交给 `api/manual.py`：写日志、输出 `__CX_MANUAL_TASK__` 事件、有推送服务时推送，运行结束时汇总。界面：配置了推送（手机：本机通知且有通知权限）只提示；没有推送时弹窗列出（桌面 `manualDialog`，手机 `RunDialogs`）。
-- 开屏交接：飞行途中启动画面的文字渐变成品牌标题的同款副本，落地同一帧换成真正的品牌（没有闪烁）；品牌下没有副标题；启动画面没有进度条。
+- 开屏交接：图标先到，标题逐字（学、习、通、P、L、U、S，每个晚 60 ms）飞到真正的标题位置；每个字是原生文字、字号逐帧变化，落点每帧实时读取目标位置（窗口尺寸恢复、页面入场位移都不影响），所以落地时与真实标题一致（桌面标题 100 ms 交叉淡入，手机同帧交接）。首次启动有引导时落到引导欢迎页的图标和标题。所有品牌图标用 256 px 纹理 + mipmap（高 DPI 清晰）。手机逐字按基线对齐（单个拉丁字母的行高与中英混排不同）。品牌下没有副标题；启动画面没有进度条。
+- 显示名称是“学习通 PLUS”（`DISPLAY_NAME` / `appName`，带空格）；`APP_NAME = "学习通PLUS"` 是身份名（安装目录、exe、快捷方式文件、QSettings 位置），不要改。
 - 推送服务 `Local`（本机通知）：`api.notification.set_local_handler` 注册后可用；安卓注册为系统通知，桌面未注册（选项只在手机上出现）。
 
 ## 安卓版（`android/`，开发中）

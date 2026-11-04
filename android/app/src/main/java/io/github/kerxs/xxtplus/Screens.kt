@@ -286,14 +286,20 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
         )
     }
 
-    Column(Modifier.fillMaxSize().systemBarsPadding().padding(Dimens.pad), verticalArrangement = Arrangement.spacedBy(Dimens.gap)) {
+    Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = Dimens.pad).padding(top = 10.dp, bottom = Dimens.pad)) {
+        // Same rhythm as the desktop guide card: brand · divider · steps · page.
         BrandRow(brandHidden)
+        Spacer(Modifier.height(14.dp))
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        Spacer(Modifier.height(18.dp))
         StepIndicator(steps.size, step)
+        Spacer(Modifier.height(20.dp))
         PageSwitch(step, { it }) { s -> PageHeader(steps[s], "开始引导 · 第 ${s + 1} / ${steps.size} 步") }
+        Spacer(Modifier.height(Dimens.gap))
         PageSwitch(step, { it }, Modifier.weight(1f).fillMaxWidth()) { s ->
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Dimens.gap)) {
                 when (s) {
-                    0 -> XCard(Modifier.fillMaxWidth(), title = "欢迎使用学习通PLUS 手机版") {
+                    0 -> XCard(Modifier.fillMaxWidth(), title = "欢迎使用学习通 PLUS 手机版") {
                         Text("与电脑版使用同一套任务逻辑。接下来几步完成：", color = c.text, fontSize = 14.sp)
                         listOf("阅读免责声明", "填写学习通账号", "选择章节检测的答题来源",
                             "权限设置（允许通知、关闭电池优化、自启动与后台运行）").forEach {
@@ -339,6 +345,7 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
                 }
             }
         }
+        Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (step > 0) XButton("上一步", { step-- })
             Spacer(Modifier.weight(1f))

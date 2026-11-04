@@ -25,7 +25,7 @@ class Uninstaller(QObject):
         info = winsetup.read_installed() or {}
         self._version = info.get("version", "")
 
-    appName = Property(str, lambda self: winsetup.APP_NAME, constant=True)
+    appName = Property(str, lambda self: winsetup.DISPLAY_NAME, constant=True)
     version = Property(str, lambda self: self._version, constant=True)
     installDir = Property(str, lambda self: str(INSTALL_DIR), constant=True)
     dataDir = Property(str, lambda self: str(winsetup.data_dir()), constant=True)
@@ -52,7 +52,7 @@ class Uninstaller(QObject):
             return
         others = winsetup.running_app_processes()
         if others:
-            self._set("error", "学习通PLUS 仍在运行（包括正在运行的任务），请先关闭后再卸载。")
+            self._set("error", "学习通 PLUS 仍在运行（包括正在运行的任务），请先关闭后再卸载。")
             return
         try:
             for link in (winsetup.desktop_shortcut(), winsetup.start_menu_shortcut()):

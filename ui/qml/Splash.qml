@@ -48,8 +48,7 @@ Window {
             Image {
                 id: icon
                 source: startup.iconUrl
-                sourceSize.width: 112
-                sourceSize.height: 112
+                sourceSize: Qt.size(256, 256)   // sharp on high-DPI displays (same texture as Main.qml)
                 width: 112
                 height: 112
                 smooth: true

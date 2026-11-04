@@ -78,6 +78,13 @@ Rectangle {
 
     onVisibleChanged: if (visible) entrance.restart()
 
+    // On a first start the splash logo lands on the welcome page's icon and title
+    // (Main.qml introLogo). They are hidden while it is in flight and shown in the frame it lands.
+    property bool brandHidden: false
+    readonly property alias welcomeIconItem: welcomeIcon
+    readonly property alias welcomeTitleItem: welcomeTitle
+    readonly property real enterOffset: panelShift.y   // the card slides in by this much
+
     Rectangle {
         id: panel
         anchors.centerIn: parent
@@ -97,12 +104,16 @@ Rectangle {
 
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 32
-            spacing: 20
+            anchors.leftMargin: 32
+            anchors.rightMargin: 32
+            anchors.topMargin: 30
+            anchors.bottomMargin: 28
+            spacing: 0
 
             // ---- step indicator ----
             RowLayout {
                 Layout.fillWidth: true
+                Layout.bottomMargin: 24
                 spacing: 8
                 Repeater {
                     model: guide.steps
@@ -160,6 +171,7 @@ Rectangle {
                 id: pages
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.bottomMargin: 20
                 clip: true
 
                 component Page: Item {
@@ -184,19 +196,23 @@ Rectangle {
                         Image {
                             id: welcomeIcon
                             source: controller.iconUrl
-                            sourceSize.width: 84
-                            sourceSize.height: 84
+                            // 256 px texture + mipmaps: sharp on 150 % / 200 % displays and sampled
+                            // exactly like the flying splash logo that lands here.
+                            sourceSize: Qt.size(256, 256)
                             Layout.preferredWidth: 84
                             Layout.preferredHeight: 84
+                            smooth: true
                             mipmap: true
+                            opacity: guide.brandHidden ? 0 : 1
+                            // Breathing starts after the splash logo has landed here (exact landing).
                             SequentialAnimation on scale {
-                                running: guide.visible && guide.step === 0 && Theme.motion
+                                running: guide.visible && guide.step === 0 && Theme.motion && !guide.brandHidden
                                 loops: Animation.Infinite
                                 NumberAnimation { to: 1.04; duration: 1400; easing.type: Easing.InOutSine }
                                 NumberAnimation { to: 1.0; duration: 1400; easing.type: Easing.InOutSine }
                             }
                         }
-                        Text { text: "欢迎使用 " + controller.appName; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 26; font.weight: Font.Bold }
+                        Text { id: welcomeTitle; opacity: guide.brandHidden ? 0 : 1; text: controller.appName; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 26; font.weight: Font.Bold }
                         Text {
                             Layout.fillWidth: true
                             text: "用几步完成初始设置。之后可以随时在“设置”页修改。"

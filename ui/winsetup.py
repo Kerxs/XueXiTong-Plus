@@ -13,7 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-APP_NAME = "学习通PLUS"
+APP_NAME = "学习通PLUS"          # identity: install folder, shortcut files, exe — do not change
+DISPLAY_NAME = "学习通 PLUS"     # what users see (window titles, Apps & features, …)
 APP_EXE = "学习通PLUS.exe"
 WORKER_EXE = "chaoxing-worker.exe"
 PUBLISHER = "学习通PLUS"
@@ -92,7 +93,7 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def create_shortcut(link: Path, target: Path, description: str = APP_NAME) -> None:
+def create_shortcut(link: Path, target: Path, description: str = DISPLAY_NAME) -> None:
     link.parent.mkdir(parents=True, exist_ok=True)
     _powershell(
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut(" + _ps_quote(str(link)) + ");"
@@ -125,7 +126,7 @@ def register(install_dir: Path, version: str, size_bytes: int) -> None:
     exe = install_dir / APP_EXE
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY, 0, winreg.KEY_WRITE) as key:
         values = {
-            "DisplayName": APP_NAME,
+            "DisplayName": DISPLAY_NAME,
             "DisplayVersion": version,
             "Publisher": PUBLISHER,
             "DisplayIcon": f"\"{exe}\",0",

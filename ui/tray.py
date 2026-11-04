@@ -59,7 +59,7 @@ class Tray(QObject):
         self._run_action = menu.addAction("开始运行")
         self._run_action.triggered.connect(self.toggleRunRequested)
         menu.addSeparator()
-        quit_action = menu.addAction("退出 学习通PLUS")
+        quit_action = menu.addAction("退出 学习通 PLUS")
         quit_action.triggered.connect(self.quitRequested)
         self._icon.setContextMenu(menu)
         self._icon.activated.connect(self._on_activated)
@@ -83,7 +83,7 @@ class Tray(QObject):
     def _sync(self) -> None:
         running = self._controller.running
         self._run_action.setText("停止任务" if running else "开始运行")
-        self._icon.setToolTip(f"学习通PLUS · {self._controller.status}")
+        self._icon.setToolTip(f"学习通 PLUS · {self._controller.status}")
 
     available = Property(bool, lambda self: self._available, constant=True)
 
@@ -107,7 +107,7 @@ class Tray(QObject):
         if str(self._settings.value("ui/trayHintShown", "false")).lower() == "true":
             return
         self._settings.setValue("ui/trayHintShown", "true")
-        self.notify("学习通PLUS 仍在后台运行", "任务会继续进行。点击托盘图标可以重新打开窗口，右键可退出。")
+        self.notify("学习通 PLUS 仍在后台运行", "任务会继续进行。点击托盘图标可以重新打开窗口，右键可退出。")
 
     def shutdown(self) -> None:
         self._icon.hide()

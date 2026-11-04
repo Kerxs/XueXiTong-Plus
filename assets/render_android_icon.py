@@ -82,13 +82,14 @@ def main() -> None:
         fg.paste(badge, (pad, pad), badge)
         fg.save(folder / "ic_launcher_foreground.png")
 
-        rounded(src.resize((legacy, legacy), Image.LANCZOS), 0.22).save(folder / "ic_launcher.png")
+        # Square like the desktop icon (no rounded corners); launchers apply their own mask.
+        src.resize((legacy, legacy), Image.LANCZOS).save(folder / "ic_launcher.png")
         circle(round_icon.resize((legacy, legacy), Image.LANCZOS)).save(folder / "ic_launcher_round.png")
 
-    # In-app brand image (splash and the top-left brand row), rounded like the legacy icon.
+    # In-app brand image (splash and the top-left brand row): square, exactly like the desktop icon.
     nodpi = RES / "drawable-nodpi"
     nodpi.mkdir(parents=True, exist_ok=True)
-    rounded(src.resize((384, 384), Image.LANCZOS), 0.22).save(nodpi / "brand_icon.png")
+    src.resize((384, 384), Image.LANCZOS).save(nodpi / "brand_icon.png")
 
     # Notification: the white star and streaks, without the PLUS badge.
     gray = src.convert("RGB")

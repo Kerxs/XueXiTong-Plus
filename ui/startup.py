@@ -13,7 +13,8 @@ from pathlib import Path
 from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, Slot, qCritical
 from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent, QQmlEngine, QQmlIncubator
 
-APP_NAME = "学习通PLUS"
+APP_NAME = "学习通PLUS"          # identity (QSettings location) — do not change
+DISPLAY_NAME = "学习通 PLUS"     # shown to users
 ROOT_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
 QML_DIR = ROOT_DIR / "ui" / "qml"
 
@@ -53,7 +54,7 @@ class StartupLoader(QObject):
     status = Property(str, lambda self: self._status, notify=statusChanged)
     progress = Property(float, lambda self: self._progress, notify=statusChanged)
     loaded = Property(bool, lambda self: self._loaded, notify=loadedChanged)
-    appName = Property(str, lambda self: APP_NAME, constant=True)
+    appName = Property(str, lambda self: DISPLAY_NAME, constant=True)
     iconUrl = Property(QUrl, lambda self: QUrl.fromLocalFile(str(ROOT_DIR / "assets" / "learning_plus.png")), constant=True)
     # Main.qml flies the splash logo from the screen centre to the nav-pane brand only after a splash.
     splashShown = Property(bool, lambda self: self._splash_shown, constant=True)

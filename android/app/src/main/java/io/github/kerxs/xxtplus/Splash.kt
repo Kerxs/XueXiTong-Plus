@@ -2,6 +2,7 @@ package io.github.kerxs.xxtplus
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,7 +46,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,10 +65,10 @@ object Brand {
     var titleRect by mutableStateOf<Rect?>(null)
 }
 
-const val BRAND_TITLE = "学习通PLUS"
+const val BRAND_TITLE = "学习通 PLUS"
 
 /**
- * Top-left brand, like the desktop nav pane: icon + 学习通PLUS.
+ * Top-left brand, like the desktop nav pane: icon + 学习通 PLUS.
  * While the splash logo flies in it is hidden; on landing the icon and title appear in the
  * same frame the identical flying copy disappears, so nothing flashes.
  */
@@ -96,7 +100,6 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
     var shown by remember { mutableIntStateOf(0) }
     var logoRect by remember { mutableStateOf<Rect?>(null) }
     var textRect by remember { mutableStateOf<Rect?>(null) }
-    val fly = remember { Animatable(0f) }
     val intro = remember { Animatable(0f) }
 
     LaunchedEffect(Unit) {
@@ -112,13 +115,13 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
         delay(250)
         onPhase(SplashPhase.Fly)
     }
+    // One clock (ms) for the whole flight: the icon arrives first, then the text, then P, L, U, S.
+    val clock = remember { Animatable(0f) }
     LaunchedEffect(phase) {
         if (phase != SplashPhase.Fly) return@LaunchedEffect
         snapshotFlow { Brand.iconRect }.first { it != null }
         delay(16)  // one frame for the page underneath to lay out
-        // Icon and text travel together; the wordmark becomes the brand title on the way (see below),
-        // so the hand-over to the real BrandRow at the end changes nothing on screen.
-        fly.animateTo(1f, tween(720, easing = InOutCubic))
+        clock.animateTo(FLIGHT_END.toFloat(), tween(FLIGHT_END, easing = LinearEasing))
         onPhase(SplashPhase.Done)
     }
     if (phase == SplashPhase.Done) return
@@ -132,17 +135,17 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
                 modifier = Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(horizontal = 34.dp, vertical = 28.dp))
         }
 
-        // The logo: measured once at the centre, then flown with offset + scale (top-left origin).
+        // The logo: measured at the centre, then flown with offset + scale (top-left origin).
         val start = logoRect
         val target = Brand.iconRect
-        val p = fly.value
-        val dx = if (start != null && target != null && phase == SplashPhase.Fly) (target.left - start.left) * p else 0f
-        val dy = if (start != null && target != null && phase == SplashPhase.Fly) (target.top - start.top) * p else 0f
+        val t = clock.value
+        val p = InOutCubic.transform((t / FLIGHT_MS).coerceIn(0f, 1f))
         val flying = start != null && target != null && phase == SplashPhase.Fly
+        val dx = if (flying) (target!!.left - start!!.left) * p else 0f
+        val dy = if (flying) (target!!.top - start!!.top) * p else 0f
         val s1 = if (flying) target!!.width / start!!.width else 1f
         val s = 1f + (s1 - 1f) * p
-        // Extra text move (in the row's unscaled pixels) so the title copy ends exactly on the
-        // brand title, not just wherever scaling the row would put it.
+        // The wordmark (inside the scaled row) heads for the title and fades out as the pieces arrive.
         val title = Brand.titleRect
         val tr = textRect
         val (tx, ty) = if (flying && title != null && tr != null) {
@@ -150,8 +153,7 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
             val finalY = target.top + (tr.top - start.top) * s1
             ((title.left - finalX) / s1) to ((title.top - finalY) / s1)
         } else 0f to 0f
-        // The splash wordmark dissolves into the brand title while it travels (36% – 78% of the way).
-        val titleAlpha = if (flying) ((p - 0.36f) / 0.42f).coerceIn(0f, 1f) else 0f
+        val wordmarkAlpha = if (flying) 1f - ((t - 260f) / 300f).coerceIn(0f, 1f) else 1f
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Row(
                 Modifier.offset { IntOffset(dx.roundToInt(), dy.roundToInt()) }
@@ -164,7 +166,7 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Image(painterResource(R.drawable.brand_icon), null,
-                    Modifier.size(96.dp).clip(RoundedCornerShape(21.dp))
+                    Modifier.size(96.dp)   // square, like the desktop icon
                         // Keep measuring while the text types (the centred row widens and the
                         // icon moves left); the flight starts from where it is at that moment.
                         .onGloballyPositioned { if (phase == SplashPhase.Splash) logoRect = it.boundsInRoot() })
@@ -172,17 +174,65 @@ fun SplashOverlay(loaded: Boolean, status: String, phase: SplashPhase, onPhase: 
                 // brand's 15 sp title and 10 dp gap.
                 Spacer(Modifier.width(27.dp))
                 Box(Modifier.graphicsLayer { translationX = tx * p; translationY = ty * p }, contentAlignment = Alignment.CenterStart) {
-                    Row(Modifier.alpha(1f - titleAlpha), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.alpha(wordmarkAlpha), verticalAlignment = Alignment.CenterVertically) {
                         Text(SPLASH_TEXT.take(shown), color = c.text, fontSize = 40.sp, fontWeight = FontWeight.Black)
-                        if (phase == SplashPhase.Splash) Caret()
+                        // Hidden, not removed, once the flight starts: removing it would narrow the
+                        // centred row and shift the icon off the start position measured for the flight.
+                        Box(Modifier.alpha(if (phase == SplashPhase.Splash) 1f else 0f)) { Caret() }
                     }
-                    // The brand title at 40 sp: × 0.375 (96 → 36 dp) = the BrandRow's 15 sp.
+                    // Invisible: only measured, as the pieces' start position.
                     Text(BRAND_TITLE, color = c.text, fontSize = 40.sp, fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.alpha(titleAlpha)
+                        modifier = Modifier.alpha(0f)
                             .onGloballyPositioned { if (phase == SplashPhase.Splash) textRect = it.boundsInRoot() })
                 }
             }
         }
+        if (flying && title != null && tr != null) TitlePieces(t, tr, title)
+    }
+}
+
+private const val FLIGHT_MS = 720
+// Characters that fly on their own (spaces only take up room): 学, 习, 通, P, L, U, S.
+private val PIECE_STARTS = BRAND_TITLE.indices.filter { !BRAND_TITLE[it].isWhitespace() }
+private fun pieceDelay(i: Int) = 120 + i * 60          // first one 120 ms after the icon, then every 60 ms
+private val FLIGHT_END = FLIGHT_MS + pieceDelay(PIECE_STARTS.size - 1)
+
+/**
+ * The title one character at a time — 学, 习, 通, P, L, U, S — each flying on its own a little later
+ * than the one before, its real font size going from 40 sp to 15 sp, so it ends as native text
+ * exactly where BrandRow draws that character (positions from the full title's glyph positions).
+ */
+@Composable
+private fun TitlePieces(t: Float, from: Rect, to: Rect) {
+    val c = X.colors
+    val measurer = rememberTextMeasurer()
+    // Same base style as BrandRow's title (LocalTextStyle), so the line box — and the glyphs'
+    // vertical position — match exactly when the pieces land.
+    val base = LocalTextStyle.current
+    fun style(size: Float) = base.merge(TextStyle(color = c.text, fontSize = size.sp, fontWeight = FontWeight.SemiBold))
+    val big = remember(BRAND_TITLE) { measurer.measure(BRAND_TITLE, style(40f)) }
+    val small = remember(BRAND_TITLE) { measurer.measure(BRAND_TITLE, style(15f)) }
+    PIECE_STARTS.forEachIndexed { i, at ->
+        val end = at + 1
+        val delayMs = pieceDelay(i)
+        val q = InOutCubic.transform(((t - delayMs) / FLIGHT_MS).coerceIn(0f, 1f))
+        val alpha = ((t - (200f + delayMs / 2f)) / 300f).coerceIn(0f, 1f)
+        val x0 = from.left + big.getHorizontalPosition(at, true)
+        val x1 = to.left + small.getHorizontalPosition(at, true)
+        val size = 40f + (15f - 40f) * q
+        val piece = BRAND_TITLE.substring(at, end)
+        // Baseline alignment: a lone Latin letter gets a shorter line box than the mixed CJK title,
+        // so placing it by its top would sit it higher than in the real title.
+        val pieceBig = remember(piece) { measurer.measure(piece, style(40f)) }
+        val pieceSmall = remember(piece) { measurer.measure(piece, style(15f)) }
+        val dy0 = big.firstBaseline - pieceBig.firstBaseline
+        val dy1 = small.firstBaseline - pieceSmall.firstBaseline
+        Text(piece, style = style(size), softWrap = false, maxLines = 1,
+            modifier = Modifier.graphicsLayer {
+                translationX = x0 + (x1 - x0) * q
+                translationY = from.top + dy0 + (to.top + dy1 - from.top - dy0) * q
+                this.alpha = alpha
+            })
     }
 }
 
