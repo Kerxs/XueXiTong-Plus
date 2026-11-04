@@ -18,11 +18,11 @@ Rectangle {
         NumberAnimation { target: label; property: "opacity"; to: 1; duration: Theme.fast }
     }
 
-    readonly property color fg: kind === "running" ? Theme.warning
+    readonly property color fg: kind === "running" ? Theme.success
         : kind === "paused" ? Theme.accent
         : kind === "error" ? Theme.danger
         : kind === "done" ? Theme.success : Theme.muted
-    readonly property color bgc: kind === "running" ? Theme.warningSoft
+    readonly property color bgc: kind === "running" ? Theme.successSoft
         : kind === "paused" ? Theme.accentSoft
         : kind === "error" ? Theme.dangerSoft
         : kind === "done" ? Theme.successSoft : Theme.surfaceAlt

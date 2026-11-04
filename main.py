@@ -442,6 +442,8 @@ class JobProcessor:
         try:
             while True:
                 task = self.retry_queue.get()
+                # 暂停时不把未开放 / 失败的章节放回队列，否则会一直重试刷日志
+                pause.wait_if_paused()
                 self.task_queue.put(task)
                 # task_done is not called when a task failed and needs to be retried so if is reinserted into the queue,
                 # the task num will increase by one and become more than the real task number
@@ -453,6 +455,8 @@ class JobProcessor:
 
 def process_chapter(chaoxing: Chaoxing, course: dict[str, Any], point: dict[str, Any], speed: float) -> ChapterResult:
     """处理单个章节"""
+    # 暂停时不再读取章节（读取任务点本身就是一次请求）
+    pause.wait_if_paused()
     logger.info(f'当前章节: {point["title"]}')
     if point["has_finished"]:
         logger.info(f'章节：{point["title"]} 已完成所有任务点')

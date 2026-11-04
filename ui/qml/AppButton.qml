@@ -3,7 +3,7 @@ import QtQuick.Controls
 import "."
 
 // Self-drawn button so it looks the same whatever Quick Controls style loads.
-// kind: "primary" | "secondary" | "danger" | "ghost"
+// kind: "primary" | "secondary" | "danger" | "warning" | "ghost"
 AbstractButton {
     id: control
     property string kind: "secondary"
@@ -12,16 +12,20 @@ AbstractButton {
 
     readonly property color baseColor: kind === "primary" ? Theme.accent
         : kind === "danger" ? Theme.dangerSoft
+        : kind === "warning" ? Theme.warningSoft
         : kind === "ghost" ? "transparent" : Theme.surface
     readonly property color hoverColor: kind === "primary" ? Theme.accentHover
         : kind === "danger" ? Qt.darker(Theme.dangerSoft, Theme.dark ? 0.85 : 1.04)
+        : kind === "warning" ? Qt.darker(Theme.warningSoft, Theme.dark ? 0.85 : 1.04)
         : Theme.surfaceAlt
     readonly property color pressColor: kind === "primary" ? Theme.accentPressed
         : kind === "danger" ? Qt.darker(Theme.dangerSoft, Theme.dark ? 0.75 : 1.08)
+        : kind === "warning" ? Qt.darker(Theme.warningSoft, Theme.dark ? 0.75 : 1.08)
         : Theme.sunken
     readonly property color fg: !enabled ? Theme.faint
         : kind === "primary" ? Theme.accentText
-        : kind === "danger" ? Theme.danger : Theme.text
+        : kind === "danger" ? Theme.danger
+        : kind === "warning" ? Theme.warning : Theme.text
 
     implicitHeight: 36
     implicitWidth: Math.max(kind === "ghost" ? 36 : 88, row.implicitWidth + (text !== "" ? 32 : 18))

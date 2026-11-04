@@ -74,7 +74,7 @@ Item {
                 AppButton {
                     text: controller.paused ? "继续" : "暂停"
                     glyph: controller.paused ? "" : ""
-                    kind: controller.paused ? "primary" : "ghost"
+                    kind: controller.paused ? "primary" : "warning"
                     opacity: controller.running ? 1 : 0
                     visible: opacity > 0.01
                     enabled: controller.running
