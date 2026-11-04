@@ -33,8 +33,8 @@ android {
         applicationId = "io.github.kerxs.xxtplus"
         minSdk = 24
         targetSdk = 35
-        versionCode = 10201
-        versionName = "1.2.1"
+        versionCode = 10202
+        versionName = "1.2.2"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 

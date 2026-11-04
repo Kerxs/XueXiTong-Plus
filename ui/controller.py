@@ -44,7 +44,7 @@ from ui.output_parser import (
 
 APP_NAME = "学习通PLUS"          # identity — do not change
 DISPLAY_NAME = "学习通 PLUS"     # shown to users
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 # Bump whenever the 开始引导 changes: everyone who finished an older guide sees it again.
 # 1: 欢迎 / 免责声明 / 账号 / 开始使用   2: + 答题设置 (1.1.7)
 # 3: 答题设置 -> 高级设置, showing 答题来源 / 答题 / 通知推送 together (1.1.9)
