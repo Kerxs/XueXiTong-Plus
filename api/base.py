@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import functools
 import json
-import math
 import os
 import random
 import secrets
@@ -869,7 +868,7 @@ class Chaoxing:
 
     @staticmethod
     def _job_rt(job: dict) -> str:
-        """The job's completion ratio as 学习通 states it: "0.9" (90% is enough), "1" (to the end) or ""."""
+        """The job's rt parameter as 学习通 states it ("0.9" / "1" / ""): sent back with the progress reports."""
         rt = str(job.get("rt") or "").strip()
         if not rt:
             rt_search = re.search(r"-rt_([1d])", str(job.get("otherinfo") or ""))
@@ -877,15 +876,6 @@ class Chaoxing:
                 rt = "0.9" if rt_search.group(1) == "d" else "1"
                 logger.trace(f"Got rt from otherinfo: {rt}")
         return rt
-
-    @staticmethod
-    def required_watch_ratio(job: dict) -> float:
-        """Share of the video that completes this task point (1.0 when unknown)."""
-        try:
-            ratio = float(Chaoxing._job_rt(job) or 1)
-        except ValueError:
-            return 1.0
-        return ratio if 0.5 <= ratio <= 1.0 else 1.0
 
     @staticmethod
     def _parse_video_progress_response(response: requests.Response, job: dict) -> tuple[bool, int]:
@@ -1022,12 +1012,6 @@ class Chaoxing:
         wait_time = int(random.uniform(30, 90))
 
         logger.info(f"开始任务: {_job['name']}, 总时长: {duration}s, 已进行: {play_time}s")
-        # 有些视频看到一定比例（常见 90%）就算完成：到达时立刻上报，平台确认后结束，不必看完
-        required_ratio = self.required_watch_ratio(_job)
-        required_time = math.ceil(duration * required_ratio) if required_ratio < 1.0 else duration
-        threshold_reported = play_time >= required_time
-        if required_ratio < 1.0:
-            logger.info(f"该视频观看到 {required_ratio:.0%} 即可完成（约 {required_time}s），到达后平台确认即结束")
 
         forbidden_retry = 0
         max_forbidden_retry = 2
@@ -1056,12 +1040,8 @@ class Chaoxing:
         pbar = None
         try:
             while not passed:
-                # Report right when the required share is reached (not up to 90 s later)
-                reached_required = not threshold_reported and play_time >= required_time
-                if reached_required:
-                    threshold_reported = True
                 # Sometimes the last request needs to be sent several times to complete the task
-                if play_time - last_log_time >= wait_time or play_time == duration or reached_required:
+                if play_time - last_log_time >= wait_time or play_time == duration:
 
                     passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration,
                                                             int(play_time), _type, headers=headers)

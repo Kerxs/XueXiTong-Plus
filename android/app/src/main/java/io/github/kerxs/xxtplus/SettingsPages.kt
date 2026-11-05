@@ -241,7 +241,7 @@ private fun RunParamsPage(snackbar: SnackbarHostState) {
     XCard(Modifier.fillMaxWidth(), title = "运行", subtitle = "并行和重试") {
         Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.warningSoft)
             .padding(horizontal = 10.dp, vertical = 8.dp)) {
-            Text("视频倍速已失效，统一按 1 倍速观看。课程要求的观看比例（如 90%）达到并经平台确认后即完成，不必看完。",
+            Text("视频倍速已失效，统一按 1 倍速完整观看，看完并经平台确认后即完成。",
                 color = c.warning, fontSize = 12.sp)
         }
         BasicFields(listOf("common.jobs", "common.retry_interval", "common.notopen_action"))

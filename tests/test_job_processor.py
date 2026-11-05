@@ -106,11 +106,15 @@ class JobProcessorTestCase(unittest.TestCase):
         self.assertEqual(task.tries, 0)
         self.assertTrue(processor.retry_queue.empty())
 
-    def test_error_retry_behavior_unchanged(self):
+    def test_error_retries_then_stops_when_it_cannot_log_in_again(self):
+        # max_tries failures -> log in again; this dummy cannot, so the run stops and says why
+        # (the full re-login flow is in test_retry_relogin.py).
         processor, task = self._make_processor(self._error_job_info(), max_tries=3)
-        self._run_with_timeout(processor)
+        with self.assertRaises(main.RunStopped) as stopped:
+            self._run_with_timeout(processor)
         self.assertEqual(task.tries, 3)
         self.assertIn(task, processor.failed_tasks)
+        self.assertIn("重新登录时出错", str(stopped.exception))
 
     def test_success_does_not_retry(self):
         # 已完成章节直接 SUCCESS，不应有任何重试。

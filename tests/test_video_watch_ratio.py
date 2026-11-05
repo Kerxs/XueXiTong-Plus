@@ -1,24 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Video speed is fixed at 1x; videos that complete at 90% report as soon as 90% is reached."""
+"""Video speed is fixed at 1x, and every video is watched to the end (the 90% shortcut no longer works)."""
 import unittest
 from unittest import mock
 
 from api.base import Chaoxing, StudyResult
 
 
-class RequiredRatioTest(unittest.TestCase):
-    def test_ratio_from_job_property_and_otherinfo(self):
-        self.assertEqual(Chaoxing.required_watch_ratio({"rt": "0.9"}), 0.9)
-        self.assertEqual(Chaoxing.required_watch_ratio({"rt": "1"}), 1.0)
-        self.assertEqual(Chaoxing.required_watch_ratio({"rt": "", "otherinfo": "nodeId_1-rt_d"}), 0.9)
-        self.assertEqual(Chaoxing.required_watch_ratio({"rt": "", "otherinfo": "nodeId_1-rt_1"}), 1.0)
-        self.assertEqual(Chaoxing.required_watch_ratio({"rt": "", "otherinfo": ""}), 1.0)   # unknown: watch it all
-        self.assertEqual(Chaoxing.required_watch_ratio({"rt": "abc"}), 1.0)
-        self.assertEqual(Chaoxing.required_watch_ratio({"rt": "0.1"}), 1.0)                 # implausible value
-
-
-class StudyVideoStopsAtRequiredShareTest(unittest.TestCase):
-    """study_video with a fake clock: a 0.9 video is reported at 90% and ends when the platform passes it."""
+class StudyVideoWatchesToTheEndTest(unittest.TestCase):
+    """study_video with a fake clock and a platform that passes a video only at its end."""
 
     def _run(self, rt, duration=100, start=0):
         reports = []
@@ -35,7 +24,7 @@ class StudyVideoStopsAtRequiredShareTest(unittest.TestCase):
 
         def progress(_s, _c, _j, _ji, _d, dur, playing, _type, headers=None, _isdrag=3):
             reports.append((playing, _isdrag))
-            return playing >= dur * float(rt), 200
+            return playing >= dur, 200
 
         cx.video_progress_log = progress
         cx._close_pbar_safe = lambda pbar: None
@@ -47,12 +36,11 @@ class StudyVideoStopsAtRequiredShareTest(unittest.TestCase):
             result = cx.study_video({"title": "c"}, job, {}, _speed=1.0)
         return result, reports
 
-    def test_ninety_percent_video_ends_at_ninety(self):
+    def test_rt_point_nine_is_not_cut_short(self):
         result, reports = self._run("0.9")
         self.assertEqual(result, StudyResult.SUCCESS)
-        last_playing = reports[-1][0]
-        self.assertGreaterEqual(last_playing, 90)
-        self.assertLess(last_playing, 95)   # reported right at 90%, not at the next 85 s report / the end
+        self.assertEqual(reports[-1][0], 100)
+        self.assertFalse([p for p, _ in reports if 86 <= p < 100])   # no extra report at 90%
 
     def test_opening_report_is_the_recorded_position_not_the_end(self):
         # No "watched it all" claim at second 0: the first report is where the platform says we are.
@@ -64,10 +52,10 @@ class StudyVideoStopsAtRequiredShareTest(unittest.TestCase):
         # ... and the next report waits for real watching time instead of repeating that position.
         self.assertGreater(reports[1][0], 40)
 
-    def test_recorded_progress_already_enough_completes_at_once(self):
-        result, reports = self._run("0.9", start=95)
+    def test_recorded_progress_at_the_end_completes_at_once(self):
+        result, reports = self._run("0.9", start=100)
         self.assertEqual(result, StudyResult.SUCCESS)
-        self.assertEqual(reports, [(95, 3)])
+        self.assertEqual(reports, [(100, 3)])
 
     def test_full_video_still_watched_to_the_end(self):
         result, reports = self._run("1")

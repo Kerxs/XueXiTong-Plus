@@ -29,6 +29,10 @@ except ImportError:
         pass
 
 
+class RunStopped(Exception):
+    """A chapter still failed after the retries, the re-login and the retries after it: stop the run."""
+
+
 class UserCancelled(Exception):
     """The user chose not to continue at a prompt; exit quietly, it is not an error."""
 
@@ -375,6 +379,8 @@ class ChapterTask:
     course: dict[str, Any]
     result: ChapterResult = ChapterResult.PENDING
     tries: int = 0
+    relogged: bool = False      # already retried after logging in again
+    last_error: str = ""
 
     def __lt__(self, other):
         """比较两个任务的索引大小，用于优先级队列排序."""
@@ -401,6 +407,10 @@ class JobProcessor:
         self.worker_num = config["jobs"]
         self.config = config
         self.retry_interval = config.get("retry_interval", 1.0)
+        # 重试 max_tries 次仍失败：重新登录、重新读取章节，再试 max_tries 次；还不行就停止运行
+        self.stop_reason = ""
+        self._relogin_lock = threading.Lock()
+        self._last_relogin = 0.0
 
     def run(self):
         for task in self.tasks:
@@ -413,10 +423,75 @@ class JobProcessor:
 
         threading.Thread(target=self.retry_thread, daemon=True).start()
 
-        self.task_queue.join()
+        # task_queue.join(), but give up waiting once the run has to stop
+        while not self.stop_reason:
+            with self.task_queue.all_tasks_done:
+                if not self.task_queue.unfinished_tasks:
+                    break
+                self.task_queue.all_tasks_done.wait(timeout=0.5)
         time.sleep(0.5)
         if hasattr(self.task_queue, "shutdown"):
             self.task_queue.shutdown()
+        if self.stop_reason:
+            raise RunStopped(self.stop_reason)
+
+    def _relogin(self) -> str:
+        """Log in again (once for all workers within a minute). Returns why it failed, "" when it worked."""
+        with self._relogin_lock:
+            if time.time() - self._last_relogin < 60:
+                return ""           # another chapter just did it
+            logger.warning("多次重试失败，正在重新登录学习通…")
+            try:
+                state = self.chaoxing.login(login_with_cookies=str_to_bool(self.config.get("use_cookies", False)))
+            except Exception as e:
+                return f"重新登录时出错：{type(e).__name__}: {e}"
+            if not state.get("status"):
+                return f"重新登录失败：{state.get('msg') or '原因未知'}"
+            self._last_relogin = time.time()
+            logger.info("已重新登录")
+            return ""
+
+    def _refresh_point(self, task: ChapterTask) -> None:
+        """Read the course's chapter list again after logging in, and use the fresh entry for this chapter."""
+        try:
+            points = self.chaoxing.get_course_point(
+                task.course["courseId"], task.course["clazzId"], task.course["cpi"])["points"]
+        except Exception as e:
+            logger.warning("重新读取章节列表失败，沿用原来的章节信息: {}: {}", type(e).__name__, e)
+            return
+        fresh = next((p for p in points if p.get("id") == task.point.get("id")), None)
+        if fresh:
+            task.point = fresh
+
+    def _stop(self, task: ChapterTask, why: str) -> None:
+        name = f"{task.course['title']} - {task.point['title']}"
+        self.stop_reason = (
+            f"章节“{name}”重试 {self.max_tries} 次失败，重新登录后又重试 {self.max_tries} 次仍然失败，已停止运行。"
+            if not why else f"章节“{name}”重试 {self.max_tries} 次失败，{why}，已停止运行。"
+        )
+        if task.last_error:
+            self.stop_reason += f"最后一次错误：{task.last_error}。"
+        self.stop_reason += ("可能是学习通接口有变化、账号被限制，或这一章需要手动处理。"
+                             "请先在学习通里打开这一章看看能否正常学习，稍后再开始运行。")
+
+    def _give_up_or_relogin(self, task: ChapterTask) -> None:
+        """task failed max_tries times: log in again and retry it, or stop the run."""
+        if task.relogged:
+            self.failed_tasks.append(task)
+            self._stop(task, "")
+            self.task_queue.task_done()
+            return
+        problem = self._relogin()
+        if problem:
+            self.failed_tasks.append(task)
+            self._stop(task, problem)
+            self.task_queue.task_done()
+            return
+        self._refresh_point(task)
+        task.relogged = True
+        task.tries = 0
+        logger.info("重新登录后再试 {} 次: {} - {}", self.max_tries, task.course["title"], task.point["title"])
+        self.retry_queue.put(task)
 
     @log_error
     def worker_thread(self):
@@ -425,6 +500,9 @@ class JobProcessor:
                 task = self.task_queue.get()
             except ShutDown:
                 logger.info("Queue shut down")
+                return
+            if self.stop_reason:        # the run is stopping: start nothing new
+                self.task_queue.task_done()
                 return
 
             try:
@@ -439,6 +517,7 @@ class JobProcessor:
                     continue
                 logger.error("处理章节出错: {} - {}: {}: {}", task.course["title"], task.point["title"],
                              type(e).__name__, e)
+                task.last_error = f"{type(e).__name__}: {e}"
                 task.result = ChapterResult.ERROR
 
             match task.result:
@@ -472,8 +551,7 @@ class JobProcessor:
                                    self.max_tries)
                     if task.tries >= self.max_tries:
                         logger.error("任务重试次数达到上限: {} - {}", task.course["title"], task.point["title"])
-                        self.failed_tasks.append(task)
-                        self.task_queue.task_done()
+                        self._give_up_or_relogin(task)
                         continue
                     self.retry_queue.put(task)
 
@@ -690,6 +768,14 @@ def main():
     except UserCancelled as e:
         logger.warning(str(e))
         sys.exit(0)
+    except RunStopped as e:
+        # Expected: one clear explanation, no traceback.
+        logger.error(str(e))
+        try:
+            notification.send(f"chaoxing : {e}")
+        except Exception:
+            pass
+        sys.exit(1)
     except LoginError as e:
         # Expected (wrong password, expired cookies): one clear line, no traceback.
         logger.error(f"登录失败：{e}。请检查账号密码，或重新导入 cookies 后再试")

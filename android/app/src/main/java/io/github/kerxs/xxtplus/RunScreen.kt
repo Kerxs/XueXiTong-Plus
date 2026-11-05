@@ -2,7 +2,6 @@ package io.github.kerxs.xxtplus
 
 import android.annotation.SuppressLint
 import android.net.Uri
-import android.webkit.WebView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -274,9 +273,6 @@ private fun allowedVideo(source: String): Boolean {
         listOf("chaoxing.com", "cldisk.com").any { host == it || host.endsWith(".$it") }
 }
 
-private fun attr(s: String) = s.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;")
-
-@SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun VideoPane() {
     val c = X.colors
@@ -285,63 +281,33 @@ private fun VideoPane() {
         Empty(if (RunState.running) "等待视频任务…" else "运行后在这里显示当前视频（静音）", Icons.Outlined.Videocam)
         return
     }
-    val rate = 1.0  // 倍速已失效：任务和预览都按 1 倍速
-    var web by remember { mutableStateOf<WebView?>(null) }
-    // Desktop VideoView: start where the task is, play at the task speed, re-sync when it drifts.
-    LaunchedEffect(source, web) {
-        val view = web ?: return@LaunchedEffect
+    var player by remember { mutableStateOf<PreviewPlayer?>(null) }
+    var state by remember { mutableStateOf("loading") }
+    // Desktop VideoView: start where the task is, re-sync when it drifts, pause with the task.
+    LaunchedEffect(source, player) {
+        val view = player ?: return@LaunchedEffect
         while (true) {
             delay(3000)
-            val pos = RunState.videoPosition()
-            if (pos >= 0 && !RunState.paused) {
-                view.evaluateJavascript(
-                    "(function(){var v=document.querySelector('video');if(!v)return;v.playbackRate=$rate;" +
-                        "if(Math.abs(v.currentTime-$pos)>3)v.currentTime=$pos;if(v.paused)v.play();})()", null)
-            } else if (RunState.paused) {
-                view.evaluateJavascript("(function(){var v=document.querySelector('video');if(v)v.pause();})()", null)
-            }
+            view.sync(RunState.videoPosition(), RunState.paused)
         }
     }
     XCard(Modifier.fillMaxWidth(), title = RunState.videoTitle.ifEmpty { "学习通视频" }, subtitle = "静音预览，不可操作") {
-        // The page's base URL makes WebView send a 学习通 Referer, which the video CDN requires.
-        AndroidView(
-            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(Dimens.radius)).background(Color.Black),
-            factory = { ctx ->
-                // Fallback: some ROMs ship without a working WebView; the run is unaffected.
-                runCatching {
-                    WebView(ctx).apply {
-                        settings.javaScriptEnabled = true
-                        settings.mediaPlaybackRequiresUserGesture = false
-                        setBackgroundColor(android.graphics.Color.BLACK)
-                    }.also { web = it }
-                }.getOrElse {
-                    android.widget.TextView(ctx).apply {
-                        text = "此手机的系统 WebView 不可用，无法预览视频（不影响任务运行）"
-                        setTextColor(android.graphics.Color.WHITE)
-                        gravity = android.view.Gravity.CENTER
-                    }
-                }
-            },
-            update = { view ->
-                if (view is WebView && view.tag != source) {
-                    view.tag = source
-                    val start = RunState.videoPosition().coerceAtLeast(0.0)
-                    val html = """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-                        <style>html,body{margin:0;height:100%;background:#000}video{width:100%;height:100%;object-fit:contain;pointer-events:none}</style>
-                        </head><body><video src="${attr(source)}#t=$start" autoplay muted playsinline></video>
-                        <script>var v=document.querySelector('video');v.playbackRate=$rate;v.addEventListener('loadedmetadata',function(){v.playbackRate=$rate;});</script>
-                        </body></html>"""
-                    view.loadDataWithBaseURL("https://mooc1.chaoxing.com/", html, "text/html", "utf-8", null)
-                }
-            },
-            onRelease = { view ->
-                if (view is WebView) { if (web === view) web = null; view.destroy() }
-            },
-        )
-        Text("与任务进度同步，按设置的倍速播放。", color = c.faint, fontSize = 12.sp)
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(Dimens.radius)).background(Color.Black),
+            contentAlignment = Alignment.Center) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx -> PreviewPlayer(ctx).also { p -> p.onState = { state = it }; player = p } },
+                update = { view -> view.show(source, RunState.videoPosition()) },
+                onRelease = { view -> if (player === view) player = null; view.release() },
+            )
+            when (state) {
+                "loading" -> Text("正在加载视频…", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
+                "error" -> Text("视频加载失败（不影响任务运行）", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+            }
+        }
+        Text("与任务进度同步，1 倍速播放。", color = c.faint, fontSize = 12.sp)
     }
 }
-
 @Composable
 private fun WorkPane() {
     val c = X.colors

@@ -19,7 +19,7 @@ Kotlin + Jetpack Compose 界面，用 [Chaquopy](https://chaquo.com/chaquopy/) �
 
 - 只支持模型公司的云服务 API（`ui/cloudmodels.py` 的服务商列表），没有本机模型、自定义接口地址和代理。
 - 没有 ddddocr（onnxruntime 无安卓版本），自动验证码识别不可用；`api/captcha.py` 已处理缺少该模块的情况。
-- 视频预览用 WebView 加载，页面的 base URL 设为学习通域名以带上 Referer，不需要本地代理。
+- 视频预览用系统播放器（`PreviewPlayer.kt`，MediaPlayer + TextureView），请求视频时直接带上学习通播放页的 Referer，不需要本地代理。
 
 ## 构建
 
@@ -46,4 +46,4 @@ APK 在 `app/build/outputs/apk/debug/`。发布用 `.\gradlew.bat assembleReleas
 
 - Chaquopy 下各依赖能否安装（lxml 有官方安卓包；其余为纯 Python）。
 - 真机息屏长时间运行：各品牌在“未关闭电池优化 / 已关闭 / 已关闭 + 自启动 + 锁定任务”下的存活情况。
-- WebView 视频预览能否带 Referer 正常播放。
+- 视频预览在真机上能否正常播放（系统播放器 + Referer）。
