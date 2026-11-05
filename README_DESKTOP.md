@@ -35,7 +35,7 @@
 - 答题：达到覆盖率时提交（默认开启）、最低覆盖率（默认 75%）、查题间隔、答错重做、判断题“正确 / 错误”的写法。
 - 通知推送：Server酱、Qmsg酱、Bark、Telegram。
 
-程序配置、cookies 和日志保存在 `%APPDATA%\ChaoxingDesktop`，可在“设置 → 关于”中点击“打开配置目录”直接访问。账号密码以明文保存在本机的 `config.ini` 中。
+程序配置、cookies 和日志保存在 `%APPDATA%\ChaoxingDesktop`，可在“设置 → 关于”中点击“打开配置目录”直接访问。`config.ini` 里的账号、密码、TOKEN、API Key 和推送地址，以及 `cookies.txt`，都用 Windows DPAPI 加密保存，只有当前 Windows 用户在这台电脑上能解密；把配置复制到别的电脑或账户后需要重新填写。
 
 需要使用 cookies 登录时，将 `cookies.txt` 放入该配置目录，并在设置中开启 cookies 登录。
 

@@ -29,7 +29,8 @@ object PythonBridge {
         val module = Python.getInstance().getModule(MODULE)
         if (!ready) {
             copyAssets(app)
-            module.callAttr("setup", app.filesDir.absolutePath, dataDir(app).absolutePath)
+            // The account and keys in config.ini are stored encrypted with this key (DataKey.kt, core/secret.py).
+            module.callAttr("setup", app.filesDir.absolutePath, dataDir(app).absolutePath, DataKey.hex(app))
             ready = true
         }
         return module

@@ -124,8 +124,14 @@ def parse_args():
 
 def load_config_from_file(config_path):
     """从配置文件加载设置"""
-    config = configparser.ConfigParser()
-    config.read(config_path, encoding="utf8")
+    from core import secret
+
+    # 账号、密码、TOKEN、API Key 等加密保存（core/secret.py）；读取时解密，旧版明文顺带加密
+    try:
+        secret.migrate(config_path)
+    except OSError:
+        pass
+    config = secret.read_config(config_path)
 
     common_config: dict[str, Any] = {}
     tiku_config: dict[str, Any] = {}
@@ -296,14 +302,20 @@ def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, spe
     # 视频任务
     if job["type"] == "video":
         logger.trace(f"识别到视频任务, 任务章节: {course['title']} 任务ID: {job['jobid']}")
-        # 超星的接口没有返回当前任务是否为Audio音频任务
-        video_result = chaoxing.study_video(
-            course, job, job_info, _speed=speed, _type="Video"
-        )
-        if video_result.is_failure():
-            logger.warning("当前任务非视频任务, 正在尝试音频任务解码")
+        # 音频和视频的任务点类型都是 video：按任务卡片（播放模块 / 文件名）判断是哪一种。
+        # 判断得出时只按这一种处理，不再“视频失败就当音频再报一遍”（视频按音频上报平台不会确认，
+        # 还可能触发验证码）；卡片看不出来时才沿用原来的先视频、再音频。
+        media = job.get("media", "")
+        if media in ("Video", "Audio"):
+            video_result = chaoxing.study_video(course, job, job_info, _speed=speed, _type=media)
+        else:
             video_result = chaoxing.study_video(
-                course, job, job_info, _speed=speed, _type="Audio")
+                course, job, job_info, _speed=speed, _type="Video"
+            )
+            if video_result.is_failure():
+                logger.warning("无法从任务卡片判断是视频还是音频，视频方式失败，正在尝试按音频处理")
+                video_result = chaoxing.study_video(
+                    course, job, job_info, _speed=speed, _type="Audio")
         if video_result.is_failure():
             logger.warning(
                 f"出现异常任务 -> 任务章节: {course['title']} 任务ID: {job['jobid']}, 已跳过"

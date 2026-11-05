@@ -72,7 +72,11 @@ class SettingsTest(unittest.TestCase):
         self.bridge.save_settings(self.config, self.template, json.dumps(values))
         config = configparser.ConfigParser()
         config.read(self.config, encoding="utf-8")
-        self.assertEqual(config["common"]["username"], "13800000000")
+        # stored encrypted (core/secret.py), read back decrypted
+        self.assertTrue(config["common"]["username"].startswith("enc:v1:"))
+        self.assertNotIn("sk-test", open(self.config, encoding="utf-8").read())
+        self.assertEqual(json.loads(self.bridge.load_settings(self.config, self.template))["common.username"],
+                         "13800000000")
         self.assertEqual(config["common"]["speed"], "1")  # 倍速已失效：always 1
         self.assertEqual(config["tiku"]["provider"], "AI")
         self.assertEqual(config["tiku"]["http_proxy"], "")

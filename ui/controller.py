@@ -25,6 +25,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
+from core import secret
 from ui import advanced, cloudmodels, localmodels
 from ui.models import LogModel, TaskModel
 from ui.output_parser import (
@@ -44,7 +45,7 @@ from ui.output_parser import (
 
 APP_NAME = "学习通PLUS"          # identity — do not change
 DISPLAY_NAME = "学习通 PLUS"     # shown to users
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 # Bump whenever the 开始引导 changes: everyone who finished an older guide sees it again.
 # 1: 欢迎 / 免责声明 / 账号 / 开始使用   2: + 答题设置 (1.1.7)
 # 3: 答题设置 -> 高级设置, showing 答题来源 / 答题 / 通知推送 together (1.1.9)
@@ -86,8 +87,12 @@ def load_config() -> configparser.ConfigParser:
         if template.exists():
             CONFIG_PATH.write_bytes(template.read_bytes())
 
-    config = configparser.ConfigParser(interpolation=None)
-    config.read(CONFIG_PATH, encoding="utf-8")
+    # Secrets are stored encrypted (core/secret.py); plain text from older versions is encrypted now.
+    try:
+        secret.migrate(CONFIG_PATH)
+    except OSError:
+        pass
+    config = secret.read_config(CONFIG_PATH)
     for section in ("common", "tiku", "notification"):
         if not config.has_section(section):
             config.add_section(section)
@@ -432,8 +437,7 @@ class AppController(QObject):
         advanced.write_values(self._config, self._advanced)
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
-            with CONFIG_PATH.open("w", encoding="utf-8") as config_file:
-                self._config.write(config_file)
+            secret.write_config(self._config, CONFIG_PATH)
         except OSError as exc:
             self.toast.emit(f"保存失败：{exc}", "error")
             return False
@@ -848,6 +852,7 @@ class AppController(QObject):
             return
 
         self._process = process
+        self._stopping = False
         self._parser = OutputParser()
         self._decoder = StreamDecoder()
         self._task_model.clear()
@@ -871,6 +876,7 @@ class AppController(QObject):
         if self._process is None:
             return
         self._set_paused(False)          # a paused worker must not sit waiting while it is stopped
+        self._stopping = True            # the exit code that follows is ours, not a crash
         self._process.terminate()
         QTimer.singleShot(1800, self._kill_if_running)
         self._log("WARNING", "已发送停止请求。")
@@ -1006,11 +1012,20 @@ class AppController(QObject):
         self._clock.stop()
         self._task_model.finish_running()
         ok = exit_code == 0
-        self._log("INFO" if ok else "ERROR", f"任务进程结束，退出码：{exit_code}")
+        stopped = getattr(self, "_stopping", False) and not ok
+        self._stopping = False
+        if stopped:
+            # Ended by 停止: the non-zero code comes from terminate()/kill(), not from an error.
+            self._log("INFO", "任务已停止。")
+        else:
+            self._log("INFO" if ok else "ERROR", f"任务进程结束，退出码：{exit_code}")
         if self._process is not None:
             self._process.deleteLater()
         self._process = None
-        self._set_status("已完成" if ok else "已退出", "done" if ok else "error")
+        if stopped:
+            self._set_status("已停止", "idle")
+        else:
+            self._set_status("已完成" if ok else "已退出", "done" if ok else "error")
         self._set_video(video_message_html("视频任务已结束", "下次运行时会继续显示当前视频"), "", False, "视频任务已结束")
 
     def _on_error(self, error) -> None:

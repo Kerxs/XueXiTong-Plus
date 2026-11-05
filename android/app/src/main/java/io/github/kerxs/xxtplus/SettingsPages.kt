@@ -212,7 +212,7 @@ private fun AccountPage(snackbar: SnackbarHostState) {
             snackbar.showSnackbar(msg)
         }
     }
-    XCard(Modifier.fillMaxWidth(), title = "学习通账号", subtitle = "账号、密码和 cookies 只保存在本应用的私有目录") {
+    XCard(Modifier.fillMaxWidth(), title = "学习通账号", subtitle = "账号、密码和 cookies 加密保存在本应用的私有目录") {
         BasicFields(listOf("common.use_cookies", "common.username", "common.password"))
         if (SettingsModel.values["common.use_cookies"] == "true") {
             Text(if (hasCookies) "已导入 cookies.txt。开启后账号密码不参与登录。" else "还没有 cookies.txt，请先导入。",

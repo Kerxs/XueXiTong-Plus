@@ -72,6 +72,20 @@ def _safe_headers(headers: dict) -> dict:
     return {k: ("***" if k.lower() in ("cookie", "authorization") else v) for k, v in (headers or {}).items()}
 
 
+_ID_SEGMENT = re.compile(r"^(?:\d{5,}|[0-9a-fA-F]{16,})$")
+
+
+def _safe_url(url: str) -> str:
+    """A request address for logs: host and path only, no query (userid, enc, tokens …) and
+    long numeric / hex path parts (personal ids, dtoken) replaced with *."""
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:
+        return "(地址无法解析)"
+    path = "/".join("*" if _ID_SEGMENT.match(seg) else seg for seg in parts.path.split("/"))
+    return f"{parts.scheme}://{parts.netloc}{path}"
+
+
 def get_timestamp():
     return str(int(time.time() * 1000))
 
@@ -579,13 +593,13 @@ class Chaoxing:
         resp = s.get(url, params=params, allow_redirects=False)
         if resp.status_code != 200:
             logger.error("Failed to get activity list, return code: " + str(resp.status_code))
-            logger.debug("Request url: " + resp.url)
+            logger.debug("Request url: {}", _safe_url(resp.url))
             return []
 
         data = resp.json()
         if data["result"] != 1:
             logger.error("Unknown status: {} {}", data["result"], data["errorMsg"])
-            logger.debug("Request url: " + resp.url)
+            logger.debug("Request url: {}", _safe_url(resp.url))
             return []
 
         return data["data"]["activeList"]
@@ -606,7 +620,7 @@ class Chaoxing:
         }
         resp = s.get('https://mobilelearn.chaoxing.com/newsign/preSign', params=params)
         resp_txt = resp.text
-        logger.debug("Request url" + resp.url)
+        logger.debug("Request url: {}", _safe_url(resp.url))
         if resp.status_code != 200:
             logger.error("Failed to get sign in, return code: " + str(resp.status_code) + "message: " + resp_txt)
 
@@ -844,14 +858,13 @@ class Chaoxing:
             )
 
             # 若出现两个rt参数都返回403的情况, 则跳过当前任务
-            logger.error("出现403报错, 尝试修复无效, 正在跳过当前任务点...")
-            logger.error("请求url: {}", resp.url)
-            logger.error("请求头: {}", _safe_headers(dict(_session.headers) | headers))
+            # 不打印完整地址和请求头：地址里有 userid、enc 等个人参数
+            logger.error("出现403报错, 尝试修复无效, 正在跳过当前任务点... (任务ID {}, 接口 {})",
+                         _job.get("jobid"), _safe_url(resp.url))
             return False, 403
 
-        logger.error(f"未知错误: {resp.status_code}")
-        logger.error("请求url: {}", resp.url)
-        logger.error("请求头: {}", _safe_headers(dict(_session.headers) | headers))
+        logger.error("视频进度上报未知错误: 状态码 {} (任务ID {}, 接口 {})",
+                     resp.status_code, _job.get("jobid"), _safe_url(resp.url))
         return False, resp.status_code
 
     @staticmethod
@@ -1024,14 +1037,21 @@ class Chaoxing:
         max_completion_report_attempts = 8
         completion_report_interval = 3.0
 
-        passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, duration,
-                                                _type, headers=headers, _isdrag=4)
+        # 开始时按平台自己记录的进度上报（不再一开始就报“已看完”：第 0 秒报进度 = 总时长的
+        # “瞬间完成”尝试与真实观看不符）。已完成的任务点在解析课程卡片时就跳过了（isPassed），
+        # 这里只有平台记录本身已到要求时才会直接确认完成。
+        recorded = f"{play_time}/{duration}s（{play_time * 100 // duration}%）"
+        passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, play_time,
+                                                _type, headers=headers)
         if passed:
-            logger.info("任务瞬间完成: {}", _job['name'])
+            logger.info("平台确认已完成（按已记录的进度 {}）: {}", recorded, _job['name'])
             return StudyResult.SUCCESS
         if state not in (200, 403):
             logger.error("首次视频进度上报失败，状态码: {}", state)
             return StudyResult.ERROR
+        # The opening report already covers the recorded position: the next one comes after
+        # the usual interval of watching, not straight away with the same position again.
+        last_log_time = play_time
 
         pbar = None
         try:

@@ -319,7 +319,7 @@ ApplicationWindow {
                                             + "使用须知：\n\n"
                                             + "• 本软件与超星、学习通官方无任何关联。\n"
                                             + "• 使用自动化工具可能违反学习通用户协议及学校的课程或学术诚信规定，可能导致账号受限或成绩作废，相关后果由使用者自行承担。\n"
-                                            + "• 账号、密码和 cookies 以明文保存在本机 %APPDATA%\\ChaoxingDesktop。"
+                                            + "• 账号、密码、TOKEN、API Key 和 cookies 加密保存在本机 %APPDATA%\\ChaoxingDesktop（只有当前 Windows 用户能解密）。"
                                     }
                                 }
                             }

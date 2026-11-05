@@ -84,7 +84,7 @@ Item {
                 Card {
                     Layout.fillWidth: true
                     title: "账号"
-                    subtitle: "账号信息只保存在本机配置目录（明文）"
+                    subtitle: "账号信息加密保存在本机（只有当前 Windows 用户能解密）"
                     icon: ""
                     appearDelay: 40
                     enabled: !controller.running

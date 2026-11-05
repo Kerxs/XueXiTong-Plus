@@ -48,9 +48,17 @@ _PLACEHOLDERS = {"xxx", "xxxxxx", "xxx,xxx,xxx"}
 _data_dir = ""
 
 
-def setup(files_dir: str, data_dir: str = "") -> None:
-    """Data files are opened relative to sys._MEIPASS (see api/cxsecret_font.resource_path)."""
+def setup(files_dir: str, data_dir: str = "", data_key: str = "") -> None:
+    """Data files are opened relative to sys._MEIPASS (see api/cxsecret_font.resource_path).
+
+    data_key: hex key from the Android Keystore (DataKey.kt) that encrypts the account, password,
+    API keys and saved cookies (core/secret.py). Empty: they stay plain text, as before.
+    """
     global _data_dir
+    from core import secret
+
+    if data_key:
+        os.environ[secret.KEY_ENV] = data_key
     sys._MEIPASS = files_dir  # type: ignore[attr-defined]
     _data_dir = data_dir or os.path.join(files_dir, "data")
     os.makedirs(_data_dir, exist_ok=True)
@@ -115,10 +123,16 @@ def list_courses(config_path: str) -> str:
 # ---------------------------------------------------------------- settings
 
 def _read_config(config_path: str, template_path: str) -> configparser.ConfigParser:
-    config = configparser.ConfigParser()
+    from core import secret
+
     if os.path.exists(config_path):
-        config.read(config_path, encoding="utf-8")
-    elif os.path.exists(template_path):
+        try:
+            secret.migrate(config_path)   # plain text from older versions -> encrypted
+        except OSError:
+            pass
+        return secret.read_config(config_path)
+    config = configparser.ConfigParser(interpolation=None)
+    if os.path.exists(template_path):
         config.read(template_path, encoding="utf-8")
     return config
 
@@ -192,11 +206,9 @@ def save_settings(config_path: str, template_path: str, values_json: str) -> Non
         if not config.has_section(section):
             config.add_section(section)
         config[section][key] = str(values.get(f["id"], f["default"])).strip()
-    os.makedirs(os.path.dirname(config_path), exist_ok=True)
-    tmp = config_path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fp:
-        config.write(fp)
-    os.replace(tmp, config_path)
+    from core import secret
+
+    secret.write_config(config, config_path)   # account, password, keys encrypted
 
 
 def setup_problem(values_json: str) -> str:

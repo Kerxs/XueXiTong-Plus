@@ -90,6 +90,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\build_windows.ps1
 
 - `core/`：两端共用、无 Qt / 安卓依赖的业务逻辑。`core/settings.py`（开始前检查 `start_problem`、引导检查 `guide_problem`，提示文字两端一致）、`core/courses.py`（识别课程，worker `--list-courses` 和安卓都调用）、`core/account.py`（清除账号数据、日志文件、日志大小；`ui/winsetup.py` 转调它）。新增共用逻辑放这里，平台代码只做适配。
 - `api/logger.py`：loguru 的 `enqueue=True` 需要 multiprocessing（sem_open），安卓没有，曾导致手机一运行就报错；现在用 `can_enqueue()` 探测。日志脱敏：`main.register_config_secrets` 登记账号、密码、TOKEN、API Key、推送地址，日志和推送消息里替换为 `***`。不要在日志里打印 cookies 值或请求头里的 Cookie / Authorization（`api/base._safe_headers`）。
+- `core/secret.py`：账号数据加密保存。`config.ini` 里 `SECRET_KEYS` 列出的字段（账号、密码、TOKEN、API Key、推送地址）和 `cookies.txt` 存为 `enc:v1:<base64>`；Windows 用 DPAPI（当前用户），安卓用 `DataKey.kt` 生成、由系统密钥库包装的数据密钥（经 `XXTPLUS_DATA_KEY` 传给 Python，AES-CTR + HMAC），两者都没有时保持明文。没有前缀的旧明文照常读取，启动时 `migrate()` 顺带加密。解不开的值（复制到别的电脑 / 账户）读作空，让用户重填。读写 `config.ini` 一律用 `secret.read_config` / `secret.write_config`（无插值，密码里的 `%` 不再报错），不要直接用 `ConfigParser`；新增敏感字段时加到 `SECRET_KEYS`。
 - `api/net.py`：网络断开时 `JobProcessor` 等网络恢复再重试该章节，不占用重试次数；章节处理抛异常不再让工作线程退出（以前会导致 `task_queue.join()` 永久卡住）。`SessionManager` 的重试带退避，超时 (10, 20) 秒。登录时没网也会等网络恢复后重试。
 - 视频：倍速已失效，固定 1 倍速（`main.py` 强制；桌面和手机的倍速选项都显示“已失效”）。`Chaoxing.required_watch_ratio` 读取任务点的 `rt`（0.9 / 1），看到要求比例时立即上报，平台确认 `isPassed` 即结束。
 - AI 客户端超时 120 秒、重试 2 次（openai 默认 600 秒）。题库请求携带 TOKEN 时校验 HTTPS 证书；只有自建的 TikuAdapter 不校验。

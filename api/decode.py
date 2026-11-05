@@ -348,11 +348,38 @@ def _process_read_task(card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+AUDIO_EXTENSIONS = (".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".oga", ".opus", ".wma", ".amr", ".ape")
+VIDEO_EXTENSIONS = (".mp4", ".m4v", ".flv", ".f4v", ".mkv", ".mov", ".avi", ".wmv", ".webm", ".ts", ".mpg", ".mpeg",
+                    ".3gp", ".rmvb", ".rm", ".vob")
+
+
+def media_type(card: Dict[str, Any]) -> str:
+    """"Video" / "Audio" from the task card, or "" when the card does not say.
+
+    学习通 puts audio and video under the same card type ("video"); the player module
+    (insertaudio / insertvideo) and the file name tell them apart. Knowing it up front avoids
+    reporting a video as audio (or the other way round), which the platform never confirms.
+    """
+    prop = card.get("property", {}) or {}
+    module = str(prop.get("module") or card.get("module") or "").lower()
+    if "audio" in module:
+        return "Audio"
+    if "video" in module:
+        return "Video"
+    name = str(prop.get("name") or prop.get("title") or "").strip().lower()
+    if name.endswith(AUDIO_EXTENSIONS):
+        return "Audio"
+    if name.endswith(VIDEO_EXTENSIONS):
+        return "Video"
+    return ""
+
+
 def _process_video_task(card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """处理视频类型任务"""
     try:
         return {
             "type": "video",
+            "media": media_type(card),
             "jobid": card.get("jobid", ""),
             "name": card.get("property", {}).get("name", ""),
             "otherinfo": card.get("otherInfo", ""),

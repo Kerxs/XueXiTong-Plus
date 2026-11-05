@@ -20,7 +20,7 @@ class RequiredRatioTest(unittest.TestCase):
 class StudyVideoStopsAtRequiredShareTest(unittest.TestCase):
     """study_video with a fake clock: a 0.9 video is reported at 90% and ends when the platform passes it."""
 
-    def _run(self, rt, duration=100):
+    def _run(self, rt, duration=100, start=0):
         reports = []
         clock = {"t": 1000.0}
 
@@ -35,13 +35,11 @@ class StudyVideoStopsAtRequiredShareTest(unittest.TestCase):
 
         def progress(_s, _c, _j, _ji, _d, dur, playing, _type, headers=None, _isdrag=3):
             reports.append((playing, _isdrag))
-            if _isdrag == 4:          # the opening report: not passed yet
-                return False, 200
             return playing >= dur * float(rt), 200
 
         cx.video_progress_log = progress
         cx._close_pbar_safe = lambda pbar: None
-        job = {"name": "1.1 视频", "jobid": "j", "rt": rt, "otherinfo": "", "playTime": 0}
+        job = {"name": "1.1 视频", "jobid": "j", "rt": rt, "otherinfo": "", "playTime": start * 1000}
         with mock.patch("api.base.time.time", fake_time), mock.patch("api.base.time.sleep", fake_sleep), \
                 mock.patch("api.base.random.uniform", lambda a, b: 85), \
                 mock.patch("api.base.pause.wait_if_paused", lambda: 0.0), \
@@ -55,6 +53,21 @@ class StudyVideoStopsAtRequiredShareTest(unittest.TestCase):
         last_playing = reports[-1][0]
         self.assertGreaterEqual(last_playing, 90)
         self.assertLess(last_playing, 95)   # reported right at 90%, not at the next 85 s report / the end
+
+    def test_opening_report_is_the_recorded_position_not_the_end(self):
+        # No "watched it all" claim at second 0: the first report is where the platform says we are.
+        _, reports = self._run("1")
+        self.assertEqual(reports[0], (0, 3))
+        _, reports = self._run("1", start=40)
+        self.assertEqual(reports[0], (40, 3))
+        self.assertNotIn(4, [drag for _, drag in reports])
+        # ... and the next report waits for real watching time instead of repeating that position.
+        self.assertGreater(reports[1][0], 40)
+
+    def test_recorded_progress_already_enough_completes_at_once(self):
+        result, reports = self._run("0.9", start=95)
+        self.assertEqual(result, StudyResult.SUCCESS)
+        self.assertEqual(reports, [(95, 3)])
 
     def test_full_video_still_watched_to_the_end(self):
         result, reports = self._run("1")

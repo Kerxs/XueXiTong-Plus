@@ -15,7 +15,7 @@ Rectangle {
     readonly property string disclaimer: "1. 本软件基于开源项目 Samueli924/chaoxing，遵循 GPL-3.0 协议，仅供学习交流使用，禁止用于任何盈利用途，修改或衍生版本必须同样开源。\n"
         + "2. 本软件与超星、学习通官方无任何关联，不代表其立场。\n"
         + "3. 使用自动化工具可能违反学习通的用户协议及所在学校的课程或学术诚信规定，可能导致账号受限、封禁或成绩作废。是否使用、如何使用由你自行判断，相关后果由你自行承担。\n"
-        + "4. 账号、密码和 cookies 以明文保存在本机 %APPDATA%\\ChaoxingDesktop 目录，请自行保管，不要在公共电脑上使用。\n"
+        + "4. 账号、密码、TOKEN、API Key 和 cookies 加密保存在本机 %APPDATA%\\ChaoxingDesktop 目录（只有当前 Windows 用户能解密），请保管好电脑，不要在公共电脑上使用。\n"
         + "5. 本软件按“现状”提供，不对运行结果、答题正确率或任何直接、间接损失作任何保证或承担责任。\n"
         + "6. 他人或组织使用本软件进行的任何违法违规行为，与作者无关。"
     // Whitespace is ignored when comparing what the user wrote with the statement.
@@ -365,7 +365,7 @@ Rectangle {
                         Text { text: "登录信息"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 22; font.weight: Font.Bold }
                         Text {
                             Layout.fillWidth: true
-                            text: "填写学习通账号和密码，或使用本地 cookies 登录。信息只保存在本机配置目录（明文）。\n现在不方便的话，可以点“稍后配置”，之后在“设置 → 账号”里填写。"
+                            text: "填写学习通账号和密码，或使用本地 cookies 登录。信息加密保存在本机配置目录。\n现在不方便的话，可以点“稍后配置”，之后在“设置 → 账号”里填写。"
                             color: Theme.muted
                             font.family: Theme.uiFont
                             font.pixelSize: 13

@@ -48,8 +48,9 @@ class NotificationService(ABC):
             成功返回配置字典，失败返回None
         """
         try:
-            config = configparser.ConfigParser()
-            config.read(self.CONFIG_PATH, encoding="utf8")
+            from core import secret
+
+            config = secret.read_config(self.CONFIG_PATH)
             return config['notification']
         except (KeyError, FileNotFoundError):
             logger.info("未找到notification配置，已忽略外部通知功能")

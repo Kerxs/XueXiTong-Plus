@@ -297,8 +297,9 @@ class Tiku(ABC):
         从默认配置文件查询配置, 如果未能查到, 停用题库
         """
         try:
-            config = configparser.ConfigParser()
-            config.read(self._config_path, encoding="utf8")
+            from core import secret
+
+            config = secret.read_config(self._config_path)
             return config['tiku']
         except (KeyError, FileNotFoundError):
             logger.info("未找到tiku配置, 已忽略题库功能")
@@ -462,8 +463,9 @@ class Tiku(ABC):
         if not conf:
             # 尝试从默认配置文件加载
             try:
-                config_parser = configparser.ConfigParser()
-                config_parser.read(path, encoding="utf8")
+                from core import secret
+
+                config_parser = secret.read_config(path)
                 conf = config_parser['tiku']
             except (KeyError, FileNotFoundError):
                 logger.error("未找到题库配置, 已忽略题库功能")
