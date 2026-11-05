@@ -109,13 +109,15 @@ object RunState {
     }
 
     /** The :worker process disappeared (killed by the system / a cleaner) without saying so. */
-    fun workerLost() {
+    fun workerLost(ctx: Context) {
         running = false
         paused = false
         prompt = null
         courses = null
         lastResult = "error"
-        logs.add(LogLine("ERROR", "任务进程已被系统结束（可能是省电策略或清理后台）。请检查“权限”设置后重新开始运行，学习通会保留已看的进度。", ""))
+        logs.add(LogLine("ERROR", if (TaskService.pendingRun(ctx))
+            "任务进程被系统结束（省电策略或清理后台），系统允许时会自动重新开始；也可以直接点“开始运行”继续，学习通会保留已看的进度。"
+        else "任务进程已被系统结束（可能是省电策略或清理后台）。请检查“权限”设置后重新开始运行，学习通会保留已看的进度。", ""))
     }
 
     fun reset() {

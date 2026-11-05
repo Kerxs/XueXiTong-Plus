@@ -66,7 +66,7 @@ class RetryReloginTest(unittest.TestCase):
                 mock.patch.object(main.logger, "error", lambda msg, *a: logged.append(msg)):
             with self.assertRaises(SystemExit) as exit_:
                 main.main()
-        self.assertEqual(exit_.exception.code, 1)
+        self.assertEqual(exit_.exception.code, main.EXIT_STOPPED)   # not restarted by the desktop app
         self.assertEqual(logged, ["章节“x”…已停止运行。"])
 
 

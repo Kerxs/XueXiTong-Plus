@@ -27,6 +27,7 @@
 - `ui/cloudmodels.py`：AI 服务商。`PROVIDERS` 每项有 `region`（cn 国内 / intl 海外，界面按 `REGIONS` 分组）、`endpoint`、`hosts`（按域名识别）、`console`（“获取 API Key”链接）。自定义服务商存在 `config.ini` 的 `[tiku] custom_providers`（JSON 列表 `{name, endpoint}`，`advanced.py` 里是 `hidden` 类型字段，没有自己的控件，由“服务商”字段编辑）；`custom_problem()` 校验（手机 `cloud_only`：只能 https、不能本机地址）。手机开始运行要求接口地址是内置服务商或已保存的自定义服务商（`core/settings._cloud_problem`）。界面上“服务商”是一行，点开是二级菜单“选择服务商”（分类 国内 / 海外 / 自定义 → 该分类的服务；桌面 `ProviderPickerDialog.qml`，手机 `Settings.kt` 的 `ProviderPicker` 全屏对话框），自定义服务在“自定义”分类里添加、删除。新增服务商时补上 `console`，`tests/test_cloudmodels.py` 会检查。QML 里不能用 `console` 作属性名。
 - 手机视频预览：`PreviewPlayer.kt`（系统 MediaPlayer + TextureView，静音、不申请音频焦点），请求时带与 `ui/videoproxy.py` 相同的 Referer / User-Agent（CDN 没有这个 Referer 会拒绝）。不用 WebView：网页无法发出这个 Referer。
 - `ui/videoproxy.py`：视频预览的本地代理（只监听 127.0.0.1，只代理已登记的 `*.chaoxing.com` / `*.cldisk.com` 地址；视频 CDN 实际在 `s1/s2.cldisk.com`）。WebView2 的 `loadHtml()` 实际是 data: URL，CDN 收不到学习通的 Referer 会拒绝视频；现在预览页面和视频都由代理提供，代理转发时带上 Referer 并透传 Range。
+- 桌面稳定性（`ui/controller.py`）：运行期间 `ui/keepawake.py` 阻止系统自动睡眠（`SetThreadExecutionState`，屏幕仍可关闭；合盖按电源设置）。任务进程意外退出（退出码不是 0、不是用户停止、不是 `main.EXIT_STOPPED`=2）或 `HANG_SECONDS`（20 分钟）没有任何输出（暂停、等用户选课程 / 回答时不算）时，`RESTART_DELAY_MS` 后自动重新开始，最多 `MAX_RESTARTS`=3 次，正常运行超过 30 分钟后重新计数；重启时自动沿用之前选的课程和 Y/n 回答。等待重启时 `running` 仍为 true，“停止”可取消。登录失败、章节重新登录后仍失败用退出码 2，不会重启。`api/net.py` 等网络时每 5 分钟输出一行，避免被当成卡住。
 - `api/pause.py`：暂停 / 继续。GUI 暂停时创建 `%APPDATA%\ChaoxingDesktop\pause.flag`（路径经环境变量 `CHAOXING_PAUSE_FILE` 传给 worker），继续时删除。worker 在 `process_job` 开头和视频循环里调用 `wait_if_paused()`，视频循环把等待的秒数加到 `last_iter`，所以暂停时间不算观看时长、继续后进度不会跳。不要改成挂起进程：那样恢复后会把暂停时间算进进度。开始、停止、任务结束和退出时都会清掉标记。
 - 窗口动画：最小化 / 隐藏到托盘 / 退出时窗口淡出并略微缩小（`fadeOutThen`），回到屏幕时淡入；最大化 / 还原不逐帧改窗口尺寸（这个窗口每次改尺寸代价大，动画会直接跳到终点），而是“淡一下 → 一次改尺寸 → 缩放淡入”（`maximizeFx`）。拖动最大化窗口还原时不加动画。关闭动画时 `Theme.motion` 为 false 全部立即完成。
 - 关闭窗口：`tray.closeAction` = ask（默认，弹窗选“后台运行 / 直接退出”，可勾“以后都这样”）/ tray / quit，存在 QSettings `ui/closeAction`；旧版 `ui/closeToTray=false` 迁移为 quit。设置页“运行”卡片里可改。
@@ -94,6 +95,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\build_windows.ps1
 - `api/logger.py`：loguru 的 `enqueue=True` 需要 multiprocessing（sem_open），安卓没有，曾导致手机一运行就报错；现在用 `can_enqueue()` 探测。日志脱敏：`main.register_config_secrets` 登记账号、密码、TOKEN、API Key、推送地址，日志和推送消息里替换为 `***`。不要在日志里打印 cookies 值或请求头里的 Cookie / Authorization（`api/base._safe_headers`）。
 - `core/secret.py`：账号数据加密保存。`config.ini` 里 `SECRET_KEYS` 列出的字段（账号、密码、TOKEN、API Key、推送地址）和 `cookies.txt` 存为 `enc:v1:<base64>`；Windows 用 DPAPI（当前用户），安卓用 `DataKey.kt` 生成、由系统密钥库包装的数据密钥（经 `XXTPLUS_DATA_KEY` 传给 Python，AES-CTR + HMAC），两者都没有时保持明文。没有前缀的旧明文照常读取，启动时 `migrate()` 顺带加密。解不开的值（复制到别的电脑 / 账户）读作空，让用户重填。读写 `config.ini` 一律用 `secret.read_config` / `secret.write_config`（无插值，密码里的 `%` 不再报错），不要直接用 `ConfigParser`；新增敏感字段时加到 `SECRET_KEYS`。
 - 章节重试（`main.JobProcessor`）：一个章节失败 5 次（`max_tries`）后重新登录（多个章节同时到达时一分钟内只登录一次）、重新读取该课程的章节列表，再试 5 次；仍失败、或重新登录失败，就抛 `RunStopped` 停止整次运行，`main()` 记一条说明（哪一章、最后的错误、可能原因）并推送，退出码 1。网络断开不计次数。
+- `SessionManager`（`api/base.py`）只建一次 `requests.Session`：`get_instance()` 每次都会调用 `__init__`，以前每个请求都重建会话、重新解密 cookies.txt 并丢下未关闭的连接（手机日志里的 ResourceWarning）。`main.py` 忽略 ResourceWarning。
 - `api/net.py`：网络断开时 `JobProcessor` 等网络恢复再重试该章节，不占用重试次数；章节处理抛异常不再让工作线程退出（以前会导致 `task_queue.join()` 永久卡住）。`SessionManager` 的重试带退避，超时 (10, 20) 秒。登录时没网也会等网络恢复后重试。
 - 视频：倍速已失效，固定 1 倍速（`main.py` 强制；桌面和手机的倍速选项都显示“已失效”）。“看到 90% 即完成”已失效并已删除（1.2.5）：每个视频都看到结尾，平台确认 `isPassed` 即结束；任务点的 `rt` 只作为上报参数原样带回（`Chaoxing._job_rt`）。
 - AI 客户端超时 120 秒、重试 2 次（openai 默认 600 秒）。题库请求携带 TOKEN 时校验 HTTPS 证书；只有自建的 TikuAdapter 不校验。
@@ -106,6 +108,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\build_windows.ps1
 
 - Kotlin + Compose + Chaquopy，构建时从仓库根目录复制 `main.py`、`api/*.py`、`core/*.py`、`ui/output_parser.py`、`ui/advanced.py`、`ui/cloudmodels.py`，所以这些文件里不能引入 Qt、Windows 专用依赖或 multiprocessing。详见 `android/README.md`。
 - 手机功能与桌面对齐：设置是二级菜单（`SettingsPages.kt`）、识别课程（`Courses.kt`）、检查更新（`Updater.kt`，.part 下载 + SHA-256 校验后交给系统安装器）、cookies 导入、数据与隐私、关于。引导：欢迎 > 免责声明 > 账号 > 答题来源 > 权限设置（推送不在引导里，手机默认本机通知）。
+- 后台被杀自动恢复：运行中 `TaskService` 返回 `START_STICKY` 并写 `files/run.json`（正常结束 / 停止时删除）。系统杀掉 :worker 后会重启服务（`onStartCommand` 收到 null intent），`restartAfterKill` 重新开始运行并记一条日志，最多 5 次；Android 12+ 若不允许后台启动前台服务则保留 run.json，界面提示点“开始运行”继续。已在模拟器上验证（kill -9 后约 1 秒重启）。
 - 稳定性：`TaskService` 运行时持有唤醒锁 + Wi-Fi 锁，记录网络断开/恢复；界面每 5 秒检查 `:worker` 进程，被系统杀掉时显示“已退出”。小屏（高度 < 640dp）运行面板整体可滚动。
 - 手机上没有真正的 `openai` 包（pydantic-core / jiter 没有安卓版本），用的是 `android/app/src/main/python/openai` 精简替代。`api/answer.py` 若用到 openai 的新接口或新错误类型，要同步补到替代模块里。
 - 手机只用模型公司的云服务 API：没有本机模型、自定义接口地址和代理（`xxtplus_android.py` 里过滤设置字段）。

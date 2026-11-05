@@ -45,7 +45,15 @@ from ui.output_parser import (
 
 APP_NAME = "学习通PLUS"          # identity — do not change
 DISPLAY_NAME = "学习通 PLUS"     # shown to users
-APP_VERSION = "1.2.5"
+# 稳定性: a task process that exits unexpectedly (crash, killed, Python error) or stays silent for
+# HANG_SECONDS is started again, at most MAX_RESTARTS times; the count starts over after a stretch
+# of RESTART_RESET_SECONDS without trouble. Exit code 2 (main.EXIT_STOPPED) is a deliberate stop.
+MAX_RESTARTS = 3
+RESTART_DELAY_MS = 10_000
+RESTART_RESET_SECONDS = 30 * 60
+HANG_SECONDS = 20 * 60
+EXIT_STOPPED = 2
+APP_VERSION = "1.2.6"
 # Bump whenever the 开始引导 changes: everyone who finished an older guide sees it again.
 # 1: 欢迎 / 免责声明 / 账号 / 开始使用   2: + 答题设置 (1.1.7)
 # 3: 答题设置 -> 高级设置, showing 答题来源 / 答题 / 通知推送 together (1.1.9)
@@ -251,6 +259,19 @@ class AppController(QObject):
         self._clock = QTimer(self)
         self._clock.setInterval(1000)
         self._clock.timeout.connect(self._tick)
+        # Automatic restart after an unexpected exit / hang (see MAX_RESTARTS).
+        self._restarts = 0
+        self._restart_pending = False
+        self._launched_at = 0.0
+        self._last_output = 0.0
+        self._waiting_input = False          # a course list / Y-n question is waiting for the user
+        self._chosen_courses: str | None = None   # answered again by itself after a restart
+        self._prompt_answer: bool | None = None
+        self._hung = False
+        self._stopping = False
+        self._watchdog = QTimer(self)
+        self._watchdog.setInterval(60_000)
+        self._watchdog.timeout.connect(self._check_hang)
         self._read_values()
         self._apply_theme()
         from ui.updater import Updater
@@ -641,7 +662,8 @@ class AppController(QObject):
         self.onboardingChanged.emit()
 
     # ----- run state -----------------------------------------------------
-    running = Property(bool, lambda self: self._process is not None, notify=runStateChanged)
+    # True while a run is active, including the few seconds before an automatic restart (停止 cancels it).
+    running = Property(bool, lambda self: self._process is not None or self._restart_pending, notify=runStateChanged)
     status = Property(str, lambda self: self._status, notify=runStateChanged)
     statusKind = Property(str, lambda self: self._status_kind, notify=runStateChanged)
     logModel = Property(QObject, lambda self: self._log_model, constant=True)
@@ -694,6 +716,7 @@ class AppController(QObject):
                 self._set_status("已暂停", "paused")
             else:
                 self._started_at = time.monotonic() - self._elapsed
+                self._last_output = time.monotonic()
                 self._clock.start()
                 self._set_status("正在运行", "running")
         self.pauseChanged.emit()
@@ -839,6 +862,15 @@ class AppController(QObject):
     def startRun(self) -> None:
         if self._process is not None:
             return
+        self._restarts = 0
+        self._restart_pending = False
+        self._chosen_courses = None
+        self._prompt_answer = None
+        self._launch()
+
+    def _launch(self) -> None:
+        if self._process is not None:
+            return
         from core import settings as core_settings  # same checks and wording as the Android app
 
         v = self._values
@@ -897,10 +929,22 @@ class AppController(QObject):
         self.dashboardChanged.emit()
         self._set_status("正在运行", "running")
         self._log("INFO", "任务进程已启动。")
+        self._launched_at = self._last_output = time.monotonic()
+        self._waiting_input = False
+        self._hung = False
+        self._watchdog.start()
+        from ui import keepawake
+
+        if keepawake.hold():
+            self._log("INFO", "运行期间不会自动睡眠（屏幕仍可关闭）。")
 
     @Slot()
     def stopRun(self) -> None:
         if self._process is None:
+            if self._restart_pending:
+                self._restart_pending = False
+                self._log("INFO", "已取消自动重新开始。")
+                self._set_status("已停止", "idle")
             return
         self._set_paused(False)          # a paused worker must not sit waiting while it is stopped
         self._stopping = True            # the exit code that follows is ours, not a crash
@@ -928,17 +972,23 @@ class AppController(QObject):
     @Slot("QVariantList")
     def submitCourses(self, course_ids) -> None:
         ids = [str(i) for i in course_ids if str(i)]
+        self._chosen_courses = ",".join(ids)
+        self._waiting_input = False
         self._write_stdin(",".join(ids))
         self._log("INFO", f"已选择课程：{', '.join(ids) if ids else '全部课程'}")
 
     @Slot(bool)
     def answerPrompt(self, yes: bool) -> None:
+        self._prompt_answer = yes
+        self._waiting_input = False
         self._write_stdin("y" if yes else "n")
 
     def _read_output(self, final: bool = False) -> None:
         if self._process is None:
             return
         chunk = self._decoder.decode(bytes(self._process.readAllStandardOutput()), final=final)
+        if chunk:
+            self._last_output = time.monotonic()
         for event in self._parser.feed(chunk, final=final):
             self._handle_event(event)
 
@@ -987,9 +1037,18 @@ class AppController(QObject):
         elif isinstance(event, ManualTaskEvent):
             self._on_manual_task(event)
         elif isinstance(event, CourseListEvent):
-            self.courseSelectionRequested.emit(event.courses)
+            if self._chosen_courses is not None:      # restarted: same choice as before
+                self._log("INFO", "自动重新开始：沿用之前选择的课程。")
+                self._write_stdin(self._chosen_courses)
+            else:
+                self._waiting_input = True
+                self.courseSelectionRequested.emit(event.courses)
         elif isinstance(event, PromptEvent):
-            self.promptRequested.emit(event.text)
+            if self._prompt_answer is not None:
+                self._write_stdin("y" if self._prompt_answer else "n")
+            else:
+                self._waiting_input = True
+                self.promptRequested.emit(event.text)
 
     # ----- content the program does not do (api/manual.py) ------------------
     manualTasksChanged = Signal()
@@ -1037,23 +1096,69 @@ class AppController(QObject):
         self._read_output(final=True)
         self._set_paused(False)
         self._clock.stop()
+        self._watchdog.stop()
+        from ui import keepawake
+
+        keepawake.release()
         self._task_model.finish_running()
         ok = exit_code == 0
         stopped = getattr(self, "_stopping", False) and not ok
         self._stopping = False
+        unexpected = not ok and not stopped and exit_code != EXIT_STOPPED
         if stopped:
             # Ended by 停止: the non-zero code comes from terminate()/kill(), not from an error.
             self._log("INFO", "任务已停止。")
-        else:
+        elif exit_code == EXIT_STOPPED:
+            self._log("ERROR", "任务已停止，原因见上方日志。")
+        elif not self._hung:
             self._log("INFO" if ok else "ERROR", f"任务进程结束，退出码：{exit_code}")
         if self._process is not None:
             self._process.deleteLater()
         self._process = None
+        self.runStateChanged.emit()
+        self._set_video(video_message_html("视频任务已结束", "下次运行时会继续显示当前视频"), "", False, "视频任务已结束")
+        if unexpected and self._schedule_restart(exit_code):
+            return
         if stopped:
             self._set_status("已停止", "idle")
         else:
             self._set_status("已完成" if ok else "已退出", "done" if ok else "error")
-        self._set_video(video_message_html("视频任务已结束", "下次运行时会继续显示当前视频"), "", False, "视频任务已结束")
+
+    def _schedule_restart(self, exit_code: int) -> bool:
+        """After an unexpected exit: start the task again in a moment. False when out of restarts."""
+        if time.monotonic() - self._launched_at > RESTART_RESET_SECONDS:
+            self._restarts = 0           # it ran fine for a long while: count from the start again
+        if self._restarts >= MAX_RESTARTS:
+            self._log("ERROR", f"任务进程连续 {MAX_RESTARTS} 次意外退出，已停止。请查看上面的日志；"
+                               "确认账号、网络和设置都正常后重新开始，学习通会保留已看的进度。")
+            return False
+        self._restarts += 1
+        reason = "长时间没有响应" if self._hung else f"意外退出（退出码 {exit_code}）"
+        self._log("WARNING", f"任务进程{reason}，{RESTART_DELAY_MS // 1000} 秒后自动重新开始"
+                             f"（第 {self._restarts}/{MAX_RESTARTS} 次），学习通会保留已看的进度。")
+        self._restart_pending = True
+        self._set_status("即将重新开始", "paused")
+        QTimer.singleShot(RESTART_DELAY_MS, self._restart)
+        return True
+
+    def _restart(self) -> None:
+        if not self._restart_pending or self._process is not None:
+            return                       # cancelled with 停止, or the user started a run already
+        self._restart_pending = False
+        self._launch()
+        if self._process is None:        # could not start (settings changed, worker missing)
+            self._set_status("已退出", "error")
+
+    def _check_hang(self) -> None:
+        """No output for HANG_SECONDS while running (not paused, not waiting for the user): restart."""
+        if self._process is None or self._paused or self._waiting_input or self._stopping:
+            return
+        silent = time.monotonic() - self._last_output
+        if silent < HANG_SECONDS:
+            return
+        self._hung = True
+        self._log("WARNING", f"任务已经 {silent / 60:.0f} 分钟没有任何输出，可能卡住了，正在结束任务进程…")
+        self._process.kill()
 
     def _on_error(self, error) -> None:
         if self._process and error != QProcess.ProcessError.Crashed:

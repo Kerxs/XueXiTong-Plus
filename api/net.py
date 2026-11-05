@@ -48,6 +48,7 @@ def wait_for_network(sleep=time.sleep, check=online, max_interval: float = 30.0)
             return 0.0
         logger.warning("网络连接中断，等待网络恢复后继续…")
         started = time.monotonic()
+        last_note = started
         interval = 3.0
         while True:
             pause.wait_if_paused()
@@ -56,4 +57,9 @@ def wait_for_network(sleep=time.sleep, check=online, max_interval: float = 30.0)
                 waited = time.monotonic() - started
                 logger.info(f"网络已恢复（中断约 {waited:.0f} 秒），继续任务")
                 return waited
+            # A line every few minutes: the user sees it is still waiting, and the desktop app's
+            # hang check (no output for a long time) does not mistake an outage for a hang.
+            if time.monotonic() - last_note >= 300:
+                last_note = time.monotonic()
+                logger.warning(f"仍在等待网络恢复（已等待约 {(last_note - started) / 60:.0f} 分钟）")
             interval = min(max_interval, interval * 1.6)

@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import traceback
+import warnings
 from dataclasses import dataclass
 from typing import Any
 from tqdm import tqdm
@@ -19,6 +20,10 @@ from api.live import Live
 from api.live_process import LiveProcessor
 from api.process import increase_learning_count_for_course
 
+# The phone's Python prints ResourceWarning (unclosed connections) to the run log, in the middle
+# of the progress line. They are of no use to users: keep them out on both apps.
+warnings.filterwarnings("ignore", category=ResourceWarning)
+
 try:
     from queue import PriorityQueue, ShutDown
 except ImportError:
@@ -27,6 +32,11 @@ except ImportError:
 
     class ShutDown(Exception):
         pass
+
+
+# Exit code for a run that ended on purpose with an explanation (login failed, chapter still failing
+# after the re-login): the desktop app must not restart it. Other non-zero codes are unexpected.
+EXIT_STOPPED = 2
 
 
 class RunStopped(Exception):
@@ -775,7 +785,7 @@ def main():
             notification.send(f"chaoxing : {e}")
         except Exception:
             pass
-        sys.exit(1)
+        sys.exit(EXIT_STOPPED)
     except LoginError as e:
         # Expected (wrong password, expired cookies): one clear line, no traceback.
         logger.error(f"登录失败：{e}。请检查账号密码，或重新导入 cookies 后再试")
@@ -783,7 +793,7 @@ def main():
             notification.send(f"chaoxing : 登录失败：{e}")
         except Exception:
             pass
-        sys.exit(1)
+        sys.exit(EXIT_STOPPED)
     except SystemExit as e:
         if e.code != 0:
             logger.error(f"错误: 程序异常退出, 返回码: {e.code}")

@@ -9,7 +9,7 @@ from api.base import Chaoxing, StudyResult
 class StudyVideoWatchesToTheEndTest(unittest.TestCase):
     """study_video with a fake clock and a platform that passes a video only at its end."""
 
-    def _run(self, rt, duration=100, start=0):
+    def _run(self, rt, duration=100, start=0, passes=None):
         reports = []
         clock = {"t": 1000.0}
 
@@ -24,6 +24,8 @@ class StudyVideoWatchesToTheEndTest(unittest.TestCase):
 
         def progress(_s, _c, _j, _ji, _d, dur, playing, _type, headers=None, _isdrag=3):
             reports.append((playing, _isdrag))
+            if passes is not None:
+                return passes(reports, dur), 200
             return playing >= dur, 200
 
         cx.video_progress_log = progress
@@ -56,6 +58,20 @@ class StudyVideoWatchesToTheEndTest(unittest.TestCase):
         result, reports = self._run("0.9", start=100)
         self.assertEqual(result, StudyResult.SUCCESS)
         self.assertEqual(reports, [(100, 3)])
+
+    def test_recorded_end_not_accepted_rewatches_from_the_start(self):
+        # "开始任务: …, 总时长: 1356s, 已进行: 1356s" and the platform does not pass it: it wants the
+        # video really watched. It used to report "at the end" 8 times and fail every retry.
+        def passes(reports, dur):
+            rewatched = any(p == 0 for p, _ in reports[1:])
+            return rewatched and reports[-1][0] >= dur
+
+        result, reports = self._run("1", duration=1356, start=1356, passes=passes)
+        self.assertEqual(result, StudyResult.SUCCESS)
+        self.assertEqual(reports[0][0], 1356)            # the recorded position, as before
+        self.assertEqual(reports[1][0], 0)               # then from the start
+        self.assertTrue(any(0 < p < 1356 for p, _ in reports))   # normal progress reports while watching
+        self.assertEqual(reports[-1][0], 1356)
 
     def test_full_video_still_watched_to_the_end(self):
         result, reports = self._run("1")

@@ -125,7 +125,7 @@ fun AppRoot(splash: Boolean) {
     LaunchedEffect(RunState.running) {
         while (RunState.running) {
             kotlinx.coroutines.delay(5000)
-            if (RunState.running && !RunState.workerAlive(ctx)) RunState.workerLost()
+            if (RunState.running && !RunState.workerAlive(ctx)) RunState.workerLost(ctx)
         }
     }
 

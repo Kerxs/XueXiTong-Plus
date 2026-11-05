@@ -99,6 +99,12 @@ class SessionManager:
         return cls._instance
 
     def __init__(self):
+        # get_instance() calls cls() every time and Python runs __init__ on each call: build the
+        # session once. (Rebuilding it on every request threw away the connection pool, re-read
+        # and decrypted cookies.txt each time, and left the old connections open - the
+        # "ResourceWarning: unclosed <ssl.SSLSocket ...>" lines in the run log.)
+        if getattr(self, "_session", None) is not None:
+            return
         self._session = requests.Session()
         # Retries with backoff (≈ 1, 2, 4, 8, 16 s) instead of 10 immediate ones, so a short
         # drop (Wi-Fi switching, a weak mobile signal) is ridden out; idempotent requests only.
@@ -482,7 +488,10 @@ class Chaoxing:
             "independentId": 0,
         }
         logger.trace("正在尝试登录...")
-        resp = _session.post(_url, headers=gc.HEADERS, data=_data)
+        try:
+            resp = _session.post(_url, headers=gc.HEADERS, data=_data)
+        finally:
+            _session.close()      # only its cookies are needed (save_cookies below)
         if resp and resp.json()["status"] == True:
             save_cookies(_session)
             SessionManager.update_cookies()
@@ -515,19 +524,18 @@ class Chaoxing:
         if not session.cookies.get("_uid"):
             return False
 
-        test_session = requests.Session()
-        test_session.headers.update(gc.HEADERS)
-        test_session.cookies.update(session.cookies.get_dict())
-
-        try:
-            resp = test_session.post(
-                "https://mooc2-ans.chaoxing.com/mooc2-ans/visit/courselistdata",
-                data={"courseType": 1, "courseFolderId": 0, "query": "", "superstarClass": 0},
-                timeout=8,
-            )
-        except RequestException as exc:
-            logger.debug("Cookie validation request failed: {}", exc)
-            return False
+        with requests.Session() as test_session:
+            test_session.headers.update(gc.HEADERS)
+            test_session.cookies.update(session.cookies.get_dict())
+            try:
+                resp = test_session.post(
+                    "https://mooc2-ans.chaoxing.com/mooc2-ans/visit/courselistdata",
+                    data={"courseType": 1, "courseFolderId": 0, "query": "", "superstarClass": 0},
+                    timeout=8,
+                )
+            except RequestException as exc:
+                logger.debug("Cookie validation request failed: {}", exc)
+                return False
 
         if resp.status_code != 200:
             return False
@@ -1033,6 +1041,17 @@ class Chaoxing:
         if state not in (200, 403):
             logger.error("首次视频进度上报失败，状态码: {}", state)
             return StudyResult.ERROR
+        if play_time >= duration - 5:
+            # 平台记录已经看到结尾却没有确认完成：反复上报“看完了”不会被接受（以前上报 8 次后算失败，
+            # 重试、重新登录后还是同样的记录，最后停止运行）。从头完整看一遍，正常上报进度。
+            logger.warning("平台记录已看到结尾（{}）但未确认完成，从头重新观看: {}", recorded, _job['name'])
+            play_time = 0
+            passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, 0,
+                                                    _type, headers=headers)
+            if passed:
+                logger.info("平台确认已完成: {}", _job['name'])
+                return StudyResult.SUCCESS
+            last_iter = time.time()
         # The opening report already covers the recorded position: the next one comes after
         # the usual interval of watching, not straight away with the same position again.
         last_log_time = play_time

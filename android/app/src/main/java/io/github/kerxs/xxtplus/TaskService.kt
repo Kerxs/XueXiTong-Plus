@@ -46,6 +46,13 @@ class TaskService : Service() {
         private const val NOTIFY_ALERT = 2
         private const val NOTIFY_PUSH = 3
         private const val HISTORY = 400
+        // A run the system killed is started again (START_STICKY) at most this many times.
+        private const val MAX_RESTARTS = 5
+
+        /** Present while a run is active; left behind when the system kills the :worker process. */
+        fun runFile(ctx: Context) = java.io.File(ctx.filesDir, "run.json")
+
+        fun pendingRun(ctx: Context): Boolean = runFile(ctx).exists()
 
         fun send(ctx: Context, action: String, text: String? = null) {
             val intent = Intent(ctx, TaskService::class.java).setAction(action)
@@ -100,22 +107,67 @@ class TaskService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START -> { alertOnFinish = intent.getBooleanExtra(EXTRA_ALERT, true); start() }
+        if (intent == null) {
+            // Restarted by the system after it killed this process (START_STICKY).
+            restartAfterKill()
+            return if (worker != null) START_STICKY else START_NOT_STICKY
+        }
+        when (intent.action) {
+            ACTION_START -> {
+                alertOnFinish = intent.getBooleanExtra(EXTRA_ALERT, true)
+                if (worker == null) restarts = 0
+                start()
+            }
             ACTION_PAUSE -> setPaused(true)
             ACTION_RESUME -> setPaused(false)
             ACTION_STOP -> finish(stopped = true, code = 0)
             ACTION_ANSWER -> answer(intent.getStringExtra(EXTRA_TEXT) ?: "")
             ACTION_SYNC -> sync()
         }
-        // Not restarted by the system after being killed: the user starts the run again
-        // (the platform keeps the watch progress, so it continues where it was).
-        return START_NOT_STICKY
+        // While a run is active the system restarts this service after killing the process
+        // (省电策略 / 清理后台), and the run continues: the platform keeps the watch progress.
+        return if (worker != null) START_STICKY else START_NOT_STICKY
     }
 
-    private fun start() {
-        startForegroundCompat(buildNotification())
-        if (worker != null) return
+    private var restarts = 0
+
+    private fun restartAfterKill() {
+        val saved = runCatching { JSONObject(runFile(this).readText()) }.getOrNull()
+        if (saved == null) { stopSelf(); return }
+        restarts = saved.optInt("restarts") + 1
+        if (restarts > MAX_RESTARTS) {
+            runFile(this).delete()
+            alert("任务已停止", "任务进程被系统结束了 $MAX_RESTARTS 次。请在“权限设置”里允许后台运行后重新开始。")
+            stopSelf()
+            return
+        }
+        alertOnFinish = saved.optBoolean("alert", true)
+        if (!start()) return
+        record(JSONObject().put("type", "log").put("level", "WARNING")
+            .put("message", "任务进程被系统结束，已自动重新开始（第 $restarts 次），学习通会保留已看的进度")
+            .put("time", "").toString())
+    }
+
+    private fun saveRun() {
+        runCatching {
+            runFile(this).writeText(JSONObject().put("alert", alertOnFinish).put("restarts", restarts)
+                .put("at", System.currentTimeMillis()).toString())
+        }
+    }
+
+    /** Returns false when Android does not allow the foreground service right now. */
+    private fun start(): Boolean {
+        try {
+            startForegroundCompat(buildNotification())
+        } catch (e: Exception) {
+            // Android 12+: a foreground service cannot start from the background unless the app is
+            // exempt from battery optimisation. Keep run.json: the app offers to continue when opened.
+            android.util.Log.w("TaskService", "cannot start in the foreground: ${e.javaClass.simpleName}")
+            stopSelf()
+            return false
+        }
+        if (worker != null) return true
+        saveRun()
         PythonBridge.pauseFile(this).delete()
         paused = false
         startedAt = System.currentTimeMillis()
@@ -151,6 +203,7 @@ class TaskService : Service() {
             }
             main.post { finish(stopped = false, code = code) }
         }, "xxtplus-task").apply { isDaemon = true; start() }
+        return true
     }
 
     /** Called from Python (any thread) with one parsed output event as JSON. */
@@ -220,6 +273,7 @@ class TaskService : Service() {
 
     private fun finish(stopped: Boolean, code: Int) {
         PythonBridge.pauseFile(this).delete()
+        runFile(this).delete()     // ended on purpose: nothing to restart
         val was = worker != null
         worker = null
         releaseLocks()

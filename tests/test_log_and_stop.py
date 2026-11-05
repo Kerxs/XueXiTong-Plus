@@ -56,9 +56,13 @@ class StopIsNotAnErrorTest(unittest.TestCase):
         self.assertFalse([m for lvl, m in self.logs if lvl == "ERROR"])
 
     def test_crash_still_reported(self):
+        # Reported, then restarted automatically (tests/test_desktop_restart.py has the details).
+        self.ctl._launched_at = __import__("time").monotonic()
         self._finish(62097, False)
-        self.assertEqual(self.ctl.property("statusKind"), "error")
+        self.assertEqual(self.ctl.property("statusKind"), "paused")
         self.assertTrue([m for lvl, m in self.logs if lvl == "ERROR" and "62097" in m])
+        self.assertTrue(self.ctl._restart_pending)
+        self.ctl._restart_pending = False
 
     def test_normal_end(self):
         self._finish(0, False)
