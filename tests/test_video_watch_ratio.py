@@ -78,7 +78,8 @@ class StudyVideoWatchesToTheEndTest(unittest.TestCase):
         result, reports = self._run("1", duration=1356, start=1356, passes=passes)
         self.assertEqual(result, StudyResult.SUCCESS)
         self.assertEqual(reports[0][0], 1356)            # the recorded position, as before
-        self.assertEqual(reports[1][0], 0)               # then from the start
+        self.assertEqual(reports[1], (1356, 4))          # a quick "ended" confirmation first
+        self.assertEqual(reports[2][0], 0)               # not accepted: then from the start
         self.assertTrue(any(0 < p < 1356 for p, _ in reports))   # normal progress reports while watching
         self.assertEqual(reports[-1][0], 1356)
 

@@ -200,6 +200,21 @@ WORK_CLOSED_MARKS = ("已截止", "已过期", "截止时间已过", "作答时�
                      "不允许作答", "已关闭")
 
 
+class AlreadyGraded(PermissionError):
+    """The 章节检测 / 作业 page is the marked (已批阅) view: nothing to answer, nothing to submit."""
+
+
+def is_graded_work_page(url: str, html: str) -> bool:
+    """The read-only marked view of a submitted test (seen on a real account:
+    ``work/selectWorkQuestionYiPiYue``, with 我的答案 boxes and right / wrong marks)."""
+    if isinstance(url, str) and "selectWorkQuestionYiPiYue" in url:
+        return True
+    html = html if isinstance(html, str) else ""
+    marked = re.search(r'class="[^"]*(?:myAnswerBx|marking_(?:dui|cuo|bandui))', html)
+    fillable = re.search(r'name="answer\d+"', html)
+    return bool(marked) and not fillable
+
+
 def classify_empty_work_page(status: int, text: str) -> str:
     """A 章节检测 page that has no questions: "submitted", "closed", "empty", or "" (a real error)."""
     if status != 200:
@@ -733,6 +748,9 @@ class Chaoxing:
                 raise RuntimeError(f"读取章节任务点失败（HTTP {_resp.status_code}）")
 
             _job_list, _job_info = decode_course_card(_resp.text)
+            for _job in _job_list:      # which card it is on: lets a video be confirmed by reading one card
+                _job.setdefault("card_num", _possible_num)
+                _job.setdefault("knowledgeid", point.get("id", ""))
             if _job_info.get("notOpen", False):
                 # 直接返回, 节省一次请求
                 logger.info("该章节未开放")
@@ -823,6 +841,10 @@ class Chaoxing:
                 return None
             if res.status_code == 403 or '验证码' in res.text or 'validate' in res.text:
                 logger.warning("检测到验证码拦截，正在尝试自动通过验证码...")
+                from api import telemetry
+
+                telemetry.count("captcha.seen")
+                blocked = False
                 try:
                     from api.captcha import CxCaptcha
                     cookies_str = "; ".join([f"{k}={v}" for k, v in _session.cookies.items()])
@@ -852,9 +874,16 @@ class Chaoxing:
                             logger.warning("验证码通过后进度上报失败 (jobid={}): {}", _job.get("jobid"), exc)
                             return None
                     else:
-                        logger.error("多次验证码通关失败，可能需要手动干预。")
+                        blocked = True
                 except Exception as e:
                     logger.error(f"验证码通关逻辑异常: {e}")
+                    blocked = True
+                if blocked:
+                    # 3 次都过不去（常见的是验证码图片本身就拿不到）：不再走 403 → 刷新会话 → 又撞验证码的循环，
+                    # 交给章节调度：等 30 秒、重新登录、重新开始本章（main.JobProcessor）
+                    from api.exceptions import CaptchaBlocked
+
+                    raise CaptchaBlocked(_job.get("name") or _job.get("jobid", ""))
             return res
 
         rt = self._job_rt(_job)
@@ -945,15 +974,34 @@ class Chaoxing:
         logger.warning("视频进度响应的 isPassed 值无效 (jobid={}): {!r}", job.get("jobid"), value)
         return False, 0
 
+    def _card_passed(self, course: dict, job: dict) -> bool:
+        """Read the one 任务点 card the job is on and say whether 学习通 shows it as passed."""
+        num, knowledge = job.get("card_num"), job.get("knowledgeid")
+        if num is None or not knowledge:
+            return False
+        try:
+            resp = SessionManager.get_session().get(
+                "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards",
+                params={"clazzid": course["clazzId"], "courseid": course["courseId"], "knowledgeid": knowledge,
+                        "num": num, "ut": "s", "cpi": course["cpi"], "v": "2025-0424-1038-3", "mooc2": 1},
+            )
+            found = re.findall(r"mArg=\{(.*?)\};", resp.text.replace(" ", ""))
+            cards = json.loads("{" + found[0] + "}").get("attachments", []) if found else []
+        except Exception as exc:
+            logger.debug(f"读取任务点卡片失败: {exc}")
+            return False
+        return any(c.get("jobid") == job.get("jobid") and c.get("isPassed") for c in cards)
+
     @staticmethod
     def _emit_video_preview(video_info: dict, job: dict) -> None:
         """Tell the app which video to preview (__CX_VIDEO_PREVIEW__); only when it asked for previews."""
         if os.environ.get("CHAOXING_DESKTOP_PREVIEW") != "1":
             return
-        source = ""
+        # Every usable address, best first (HD, then https): the preview falls back to the next one.
+        sources = []
         for source_key in ("httpshd", "httphd", "https", "http", "url", "mp4"):
             candidate = video_info.get(source_key)
-            if not isinstance(candidate, str):
+            if not isinstance(candidate, str) or candidate in sources:
                 continue
             try:
                 parsed = urlsplit(candidate)
@@ -962,9 +1010,9 @@ class Chaoxing:
             # The video CDN is on cldisk.com (e.g. s2.cldisk.com), not chaoxing.com.
             host = (parsed.hostname or "").lower()
             if parsed.scheme in {"http", "https"} and host.endswith((".chaoxing.com", ".cldisk.com")):
-                source = candidate
-                break
-        preview_event = {"source": source, "title": job.get("name", "学习通视频")}
+                sources.append(candidate)
+        preview_event = {"source": sources[0] if sources else "", "sources": sources,
+                         "title": job.get("name", "学习通视频")}
         print("__CX_VIDEO_PREVIEW__" + json.dumps(preview_event, ensure_ascii=False), flush=True)
 
     @staticmethod
@@ -1073,8 +1121,9 @@ class Chaoxing:
         # 视频到末尾后等平台确认完成：最多上报 8 次、每次间隔约 3 秒（约 25 秒），
         # 不再每秒上报 20 次（平台一直不确认时要白等约一分钟）
         completion_report_attempts = 0
-        max_completion_report_attempts = 8
-        completion_report_interval = 3.0
+        # 到结尾后再报“已看完”的间隔（秒）：2、3、5、8，共约 20 秒；第 2、4 次之后直接读卡片确认
+        completion_waits = (2, 3, 5, 8)
+        completion_started = 0.0
 
         # 开始时按平台自己记录的进度上报（不再一开始就报“已看完”：第 0 秒报进度 = 总时长的
         # “瞬间完成”尝试与真实观看不符）。已完成的任务点在解析课程卡片时就跳过了（isPassed），
@@ -1088,6 +1137,13 @@ class Chaoxing:
         if state not in (200, 403):
             logger.error("首次视频进度上报失败，状态码: {}", state)
             return StudyResult.ERROR
+        if play_time >= duration - 5:
+            # 先快速确认一次（按结尾上报 + 读卡片），确认不了再从头看
+            passed, _ = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, duration,
+                                                _type, headers=headers, _isdrag=4)
+            if passed or self._card_passed(_course, _job):
+                logger.info("平台确认已完成（按已记录的进度）: {}", _job['name'])
+                return StudyResult.SUCCESS
         if play_time >= duration - 5:
             # 平台记录已经看到结尾却没有确认完成：反复上报“看完了”不会被接受（以前上报 8 次后算失败，
             # 重试、重新登录后还是同样的记录，最后停止运行）。从头完整看一遍，正常上报进度。
@@ -1155,17 +1211,29 @@ class Chaoxing:
                         return StudyResult.ERROR
 
                     if not passed and int(play_time) >= duration:
+                        if not completion_report_attempts:
+                            completion_started = time.time()
                         completion_report_attempts += 1
-                        if completion_report_attempts >= max_completion_report_attempts:
-                            logger.error(
-                                "视频已到末尾，但平台连续{}次未确认完成: {}",
-                                completion_report_attempts,
-                                _job.get("name", _job.get("jobid", "未知任务")),
-                            )
-                            return StudyResult.ERROR
-                        # 下一次确认前多等一会儿（循环本身还会再睡 THRESHOLD 秒）
-                        time.sleep(max(0.0, completion_report_interval - gc.THRESHOLD))
+                        if completion_report_attempts in (2, 4) and self._card_passed(_course, _job):
+                            logger.info("平台已确认完成（任务点卡片显示完成，用时 {:.0f} 秒）: {}",
+                                        time.time() - completion_started, _job.get("name", ""))
+                            passed = True
+                            break
+                        if completion_report_attempts > len(completion_waits):
+                            # 不算失败：这一章其余任务照常完成；运行末尾补漏时会再确认一次
+                            from api import telemetry
+
+                            telemetry.count("video.unconfirmed")
+                            logger.warning("视频已看到结尾，平台暂未确认完成，补漏时再确认: {}",
+                                           _job.get("name", _job.get("jobid", "未知任务")))
+                            return StudyResult.SUCCESS
+                        logger.info("已到结尾，等待平台确认（第 {} 次）", completion_report_attempts)
+                        # 下一次确认前等一会儿（循环本身还会再睡 THRESHOLD 秒）
+                        time.sleep(max(0.0, completion_waits[completion_report_attempts - 1] - gc.THRESHOLD))
                     else:
+                        if passed and completion_report_attempts:
+                            logger.info("平台已确认完成（用时 {:.0f} 秒）: {}", time.time() - completion_started,
+                                        _job.get("name", ""))
                         completion_report_attempts = 0
 
                     wait_time = int(random.uniform(30, 90))
@@ -1296,6 +1364,9 @@ class Chaoxing:
             # 未创建完成该测验则不进行答题，目前遇到的情况是未创建完成等同于没题目
             if '教师未创建完成该测验' in _resp.text:
                 raise PermissionError("教师未创建完成该测验")
+            # 已批阅的检测也带着题目：不能当成可以作答的检测再提交一次（以前章节重试时会重复提交）
+            if is_graded_work_page(getattr(_resp, "url", ""), _resp.text):
+                raise AlreadyGraded("章节检测已批阅")
 
             last_page["status"], last_page["text"] = _resp.status_code, _resp.text
             questions = decode_questions_info(_resp.text)
@@ -1331,6 +1402,15 @@ class Chaoxing:
             questions = {}
             try:
                 final_resp, questions = fetch_response_with_retry()
+            except AlreadyGraded:
+                from api import telemetry
+
+                telemetry.count("work.graded_skip")
+                if attempt > 0:
+                    logger.info(f"章节检测已批阅，不能再次作答，保留已提交的成绩 {last_submitted_score} 分")
+                else:
+                    logger.info(f"章节检测已提交并批阅，不再重复提交: {_job.get('name') or _job.get('jobid')}")
+                return StudyResult.SUCCESS
             except PermissionError as e:
                 logger.warning(f"跳过章节检测: {e}")
                 return StudyResult.SUCCESS

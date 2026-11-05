@@ -47,6 +47,9 @@ def wait_for_network(sleep=time.sleep, check=online, max_interval: float = 30.0)
         if check():
             return 0.0
         logger.warning("网络连接中断，等待网络恢复后继续…")
+        from api import telemetry
+
+        telemetry.count("network.wait")
         started = time.monotonic()
         last_note = started
         interval = 3.0

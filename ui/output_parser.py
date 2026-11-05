@@ -65,6 +65,7 @@ class VideoPreviewEvent:
     source: str
     title: str
     valid: bool = True
+    sources: list = field(default_factory=list)   # every usable address, best first (source = sources[0])
 
 
 @dataclass
@@ -215,7 +216,12 @@ class OutputParser:
             data = _parse_json(line.removeprefix(VIDEO_PREVIEW_PREFIX))
             if data is None:
                 return [VideoPreviewEvent("", "", valid=False)]
-            return [VideoPreviewEvent(str(data.get("source", "") or ""), str(data.get("title", "") or "学习通视频"))]
+            source = str(data.get("source", "") or "")
+            sources = [str(s) for s in (data.get("sources") or []) if isinstance(s, str) and s]
+            if source and source not in sources:
+                sources.insert(0, source)
+            return [VideoPreviewEvent(source or (sources[0] if sources else ""), str(data.get("title", "") or "学习通视频"),
+                                      sources=sources)]
 
         if line.startswith(WORK_PREVIEW_PREFIX):
             data = _parse_json(line.removeprefix(WORK_PREVIEW_PREFIX))

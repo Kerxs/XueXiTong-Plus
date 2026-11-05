@@ -2,6 +2,7 @@
 import argparse
 import configparser
 import enum
+import os
 import sys
 import threading
 import time
@@ -10,10 +11,10 @@ import warnings
 from dataclasses import dataclass
 from typing import Any
 from tqdm import tqdm
-from api import manual, net, pause
+from api import manual, net, pause, telemetry
 from api.answer import Tiku
 from api.base import Chaoxing, Account, StudyResult
-from api.exceptions import LoginError, InputFormatError
+from api.exceptions import CaptchaBlocked, LoginError, InputFormatError
 from api.logger import logger
 from api.notification import Notification
 from api.live import Live
@@ -401,6 +402,11 @@ def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, spe
     return StudyResult.ERROR
 
 
+# 验证码过不去时：等多久再重新登录、每次运行最多重新开始几次（之后提醒用户手动处理这个视频）
+CAPTCHA_COOLDOWN = 30
+MAX_CAPTCHA_RESTARTS = 3
+
+
 @dataclass
 class ChapterTask:
     index: int
@@ -440,6 +446,7 @@ class JobProcessor:
         self.stop_reason = ""
         self._relogin_lock = threading.Lock()
         self._last_relogin = 0.0
+        self._captcha_restarts = 0
 
     def run(self):
         for task in self.tasks:
@@ -464,10 +471,11 @@ class JobProcessor:
         if self.stop_reason:
             raise RunStopped(self.stop_reason)
 
-    def _relogin(self) -> str:
-        """Log in again (once for all workers within a minute). Returns why it failed, "" when it worked."""
+    def _relogin(self, force: bool = False) -> str:
+        """Log in again (once for all workers within a minute; ``force``: within 20 s).
+        Returns why it failed, "" when it worked."""
         with self._relogin_lock:
-            if time.time() - self._last_relogin < 60:
+            if time.time() - self._last_relogin < (20 if force else 60):
                 return ""           # another chapter just did it
             logger.warning("多次重试失败，正在重新登录学习通…")
             try:
@@ -477,6 +485,7 @@ class JobProcessor:
             if not state.get("status"):
                 return f"重新登录失败：{state.get('msg') or '原因未知'}"
             self._last_relogin = time.time()
+            telemetry.count("relogin")
             logger.info("已重新登录")
             return ""
 
@@ -493,6 +502,7 @@ class JobProcessor:
             task.point = fresh
 
     def _stop(self, task: ChapterTask, why: str) -> None:
+        telemetry.count("run.stopped")
         name = f"{task.course['title']} - {task.point['title']}"
         self.stop_reason = (
             f"章节“{name}”重试 {self.max_tries} 次失败，重新登录后又重试 {self.max_tries} 次仍然失败，已停止运行。"
@@ -502,6 +512,33 @@ class JobProcessor:
             self.stop_reason += f"最后一次错误：{task.last_error}。"
         self.stop_reason += ("可能是学习通接口有变化、账号被限制，或这一章需要手动处理。"
                              "请先在学习通里打开这一章看看能否正常学习，稍后再开始运行。")
+
+    def _captcha_restart(self, task: ChapterTask, exc: CaptchaBlocked) -> None:
+        """A captcha that could not be passed: wait, log in again and start the chapter over
+        (not counted as a try). After MAX_CAPTCHA_RESTARTS in a run the video is left for the user."""
+        self._captcha_restarts += 1
+        telemetry.count("captcha.restart")
+        name = f"{task.course['title']} - {task.point['title']}"
+        if self._captcha_restarts > MAX_CAPTCHA_RESTARTS:
+            logger.warning(f"本次运行已因验证码重新开始 {MAX_CAPTCHA_RESTARTS} 次，跳过「{exc.job_name}」，请到学习通打开播放一下")
+            manual.report(task.course, task.point, {"type": "other", "card_type": "captcha",
+                                                     "jobid": exc.job_name, "name": exc.job_name})
+            self.task_queue.task_done()
+            return
+        logger.warning(f"遇到验证码且无法通过，{CAPTCHA_COOLDOWN} 秒后重新登录并重新开始本章: {name}"
+                       f"（第 {self._captcha_restarts}/{MAX_CAPTCHA_RESTARTS} 次）")
+        waited = 0
+        while waited < CAPTCHA_COOLDOWN and not self.stop_reason:
+            pause.wait_if_paused()
+            time.sleep(1)
+            waited += 1
+        problem = self._relogin(force=True)
+        if problem:
+            self.failed_tasks.append(task)
+            self._stop(task, problem)
+            self.task_queue.task_done()
+            return
+        self.retry_queue.put(task)
 
     def _give_up_or_relogin(self, task: ChapterTask) -> None:
         """task failed max_tries times: log in again and retry it, or stop the run."""
@@ -536,6 +573,9 @@ class JobProcessor:
 
             try:
                 task.result = process_chapter(self.chaoxing, task.course, task.point, self.speed)
+            except CaptchaBlocked as e:
+                self._captcha_restart(task, e)
+                continue
             except Exception as e:
                 # An exception used to end this worker thread, leaving its chapter unfinished in the
                 # queue: task_queue.join() then waited forever and the run hung.
@@ -575,6 +615,7 @@ class JobProcessor:
 
                 case ChapterResult.ERROR:
                     task.tries += 1
+                    telemetry.count("chapter.retry")
                     logger.warning("重试任务 {} - {} ({}/{} 次尝试)", task.course["title"], task.point["title"],
                                    task.tries,
                                    self.max_tries)
@@ -661,6 +702,10 @@ def process_chapter(chaoxing: Chaoxing, course: dict[str, Any], point: dict[str,
     for job in jobs:
         result = process_job(chaoxing, course, job, job_info, speed, point)
         job_results.append(result)
+        if not _automated(job):
+            telemetry.count("other.manual")
+        else:
+            telemetry.count(f"{job.get('type')}.{'fail' if result.is_failure() else 'ok'}")
 
     for result in job_results:
         if result.is_failure():
@@ -750,6 +795,7 @@ def main():
         common_config["speed"] = 1.0
         common_config["notopen_action"] = common_config.get("notopen_action", "retry")
         
+        telemetry.configure(str_to_bool(common_config.get("telemetry", False)), os.getcwd())
         global AUTO_DOCUMENTS
         AUTO_DOCUMENTS = str_to_bool(common_config.get("auto_documents", True))
         auto_homework = str_to_bool(common_config.get("auto_homework", True))
@@ -830,6 +876,7 @@ def main():
                 if auto_homework:
                     for key, value in homework.run_homework(chaoxing, course, homework_submit).items():
                         totals[key] += value
+                        telemetry.count(f"homework.{key}", value)
                 if watch_activities:
                     homework.watch_activities(chaoxing, course)
             if auto_homework and any(totals.values()):
@@ -838,6 +885,8 @@ def main():
 
         # 完成率：最后再读一次章节列表（每门课一次请求）
         _, stats = unfinished_chapters(chaoxing, course_task)
+        telemetry.count("chapters.done", sum(d for d, _ in stats.values()))
+        telemetry.count("chapters.total", sum(t for _, t in stats.values()))
         report = completion_report(stats)
         if report:
             logger.info(report)
@@ -892,6 +941,8 @@ def main():
         except Exception:
             pass  # 如果通知发送失败，忽略异常
         raise e
+    finally:
+        telemetry.save()
 
 
 if __name__ == "__main__":

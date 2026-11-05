@@ -68,6 +68,8 @@ object RunState {
     val logs = mutableStateListOf<LogLine>()
     val progress = mutableStateMapOf<String, Progress>()
     var videoSource by mutableStateOf("")
+    /** Every usable address of the current video, best first (videoSource = the first). */
+    var videoSources by mutableStateOf<List<String>>(emptyList())
     var videoTitle by mutableStateOf("")
     var workPhase by mutableStateOf("")
     var workTitle by mutableStateOf("")
@@ -123,7 +125,7 @@ object RunState {
     fun reset() {
         logs.clear(); progress.clear(); questions.clear(); RevealedAnswers.clear(); manualTasks.clear(); showManualDialog = false
         course = ""; chapter = ""; finishedTasks = 0
-        videoSource = ""; videoTitle = ""; workPhase = ""; workTitle = ""; workCoverRate = 0
+        videoSource = ""; videoSources = emptyList(); videoTitle = ""; workPhase = ""; workTitle = ""; workCoverRate = 0
         prompt = null; courses = null
     }
 
@@ -161,6 +163,9 @@ object RunState {
             }
             "videopreview" -> if (e.optBoolean("valid", true)) {
                 videoSource = e.optString("source")
+                val list = e.optJSONArray("sources")
+                videoSources = (if (list == null) emptyList() else (0 until list.length()).map { list.optString(it) })
+                    .filter { it.isNotEmpty() }.ifEmpty { listOf(videoSource).filter { it.isNotEmpty() } }
                 videoTitle = e.optString("title")
             }
             "workpreview" -> if (e.optBoolean("valid", true)) applyWork(e.optJSONObject("data") ?: JSONObject())

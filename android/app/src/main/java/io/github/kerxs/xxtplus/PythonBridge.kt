@@ -64,6 +64,9 @@ object PythonBridge {
     fun guideProblem(ctx: Context, valuesJson: String): String =
         module(ctx).callAttr("guide_problem", valuesJson).toString()
 
+    fun feedback(ctx: Context): String = module(ctx).callAttr("feedback").toString()
+    fun clearStats(ctx: Context) { module(ctx).callAttr("clear_stats") }
+
     fun addCustomProvider(ctx: Context, saved: String, name: String, endpoint: String): String =
         module(ctx).callAttr("add_custom_provider", saved, name, endpoint).toString()
 

@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -306,7 +308,57 @@ private fun DataPage(snackbar: SnackbarHostState) {
     XCard(Modifier.fillMaxWidth(), title = "恢复默认设置", subtitle = "答题、推送等设置恢复默认，账号信息保留") {
         XButton("恢复默认设置", { confirm = "reset" }, Modifier.fillMaxWidth(), enabled = !RunState.running)
     }
+    // 匿名使用统计（api/telemetry.py，默认关闭）和一键反馈（打开 GitHub，由用户自己提交）
+    var feedbackText by remember { mutableStateOf("") }
+    var feedbackUrl by remember { mutableStateOf("") }
+    XCard(Modifier.fillMaxWidth(), title = "匿名使用统计",
+        subtitle = "只记录各类任务的成功 / 失败次数和错误类型，不含账号、课程、题目和日志；保存在手机上，默认关闭") {
+        SwitchRow("记录匿名统计", "关闭时什么都不记录", SettingsModel.values["common.telemetry"] == "true") {
+            SettingsModel.values["common.telemetry"] = if (it) "true" else "false"
+            scope.launch { SettingsModel.save(ctx) }
+        }
+        XButton("预览并反馈", {
+            scope.launch {
+                val data = withContext(Dispatchers.IO) { runCatching { JSONObject(PythonBridge.feedback(ctx)) }.getOrNull() }
+                feedbackText = data?.optString("text").orEmpty()
+                feedbackUrl = data?.optString("url").orEmpty()
+                confirm = "feedback"
+            }
+        }, Modifier.fillMaxWidth())
+    }
     if (RunState.running) Text("任务运行中，停止后才能清除账号数据或恢复默认设置。", color = c.muted, fontSize = 12.sp)
+    if (confirm == "feedback") {
+        AlertDialog(
+            onDismissRequest = { confirm = "" },
+            containerColor = c.surface, titleContentColor = c.text, textContentColor = c.text,
+            shape = RoundedCornerShape(Dimens.radiusLarge),
+            title = { Text("反馈问题") },
+            text = {
+                Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(if (feedbackText.isEmpty()) "还没有统计数据。打开“记录匿名统计”并运行一次后，这里会出现可以反馈的内容。"
+                    else "将打开 GitHub 的新建反馈页面并填好下面的内容，你确认后再提交。只含计数，不含账号、课程、题目和日志。",
+                        color = c.muted, fontSize = 13.sp)
+                    if (feedbackText.isNotEmpty()) Text(feedbackText, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                }
+            },
+            confirmButton = {
+                XButton("打开 GitHub 反馈", {
+                    confirm = ""
+                    runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(feedbackUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                }, kind = Kind.Primary, enabled = feedbackUrl.isNotEmpty())
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (feedbackText.isNotEmpty()) XButton("清除统计", {
+                        confirm = ""
+                        scope.launch { withContext(Dispatchers.IO) { PythonBridge.clearStats(ctx) }; snackbar.showSnackbar("已清除匿名统计") }
+                    }, kind = Kind.Ghost)
+                    XButton("关闭", { confirm = "" }, kind = Kind.Ghost)
+                }
+            },
+        )
+    }
 
     when (confirm) {
         "logs" -> ConfirmDialog("清除运行日志", "将删除保存的运行日志文件，界面里的日志也会清空。", "清除", {

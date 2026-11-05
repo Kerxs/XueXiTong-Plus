@@ -40,6 +40,8 @@ class PreviewPlayer(ctx: Context) : TextureView(ctx), TextureView.SurfaceTexture
     private var prepared = false
     private var surface: Surface? = null
     private var source = ""
+    private var sources: List<String> = emptyList()   // backup addresses, tried in order on errors
+    private var sourceIndex = 0
     private var startAt = 0.0
     private var videoW = 0
     private var videoH = 0
@@ -49,11 +51,13 @@ class PreviewPlayer(ctx: Context) : TextureView(ctx), TextureView.SurfaceTexture
         isOpaque = false
     }
 
-    /** Show this video, starting at `at` seconds. The same address again is ignored. */
-    fun show(url: String, at: Double) {
+    /** Show this video (its addresses, best first), starting at `at` seconds. The same video again is ignored. */
+    fun show(urls: List<String>, at: Double) {
         if (at >= 0) position = at
-        if (url == source) return
-        source = url
+        if (urls.isEmpty() || urls.first() == sources.firstOrNull()) return
+        sources = urls
+        sourceIndex = 0
+        source = urls.first()
         failures = 0
         handler.removeCallbacks(retry)
         startAt = at.coerceAtLeast(0.0)
@@ -67,6 +71,17 @@ class PreviewPlayer(ctx: Context) : TextureView(ctx), TextureView.SurfaceTexture
     }
 
     private fun failed() {
+        // A backup address first (no waiting); only when all of them failed, wait and start over.
+        if (sourceIndex + 1 < sources.size) {
+            sourceIndex++
+            source = sources[sourceIndex]
+            Log.w(TAG, "trying backup address ${sourceIndex + 1}/${sources.size}")
+            handler.removeCallbacks(retry)
+            handler.post(retry)
+            return
+        }
+        sourceIndex = 0
+        source = sources.firstOrNull() ?: source
         failures++
         if (failures == 3) onGiveUp()
         // 2, 4, 8, 16, 30, 30 ... seconds: it never gives up while the video is on screen

@@ -225,6 +225,20 @@ def guide_problem(values_json: str) -> str:
     return settings.guide_problem(json.loads(values_json), cloud_only=True)
 
 
+def feedback() -> str:
+    """匿名使用统计 → {"text", "url"} for the 反馈问题 dialog ("" text when there is nothing yet)."""
+    from api import telemetry
+
+    text = telemetry.summary(telemetry.load(_data_dir))
+    return json.dumps({"text": text, "url": telemetry.feedback_url(text) if text else ""}, ensure_ascii=False)
+
+
+def clear_stats() -> None:
+    from api import telemetry
+
+    telemetry.clear(_data_dir)
+
+
 def add_custom_provider(saved: str, name: str, endpoint: str) -> str:
     """自定义服务商 on the phone: https only, no 本机 services. {"ok", "error", "value", "endpoint"}."""
     from ui import cloudmodels

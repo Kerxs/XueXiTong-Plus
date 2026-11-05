@@ -239,6 +239,11 @@ def do_homework(chaoxing, course: dict, hw: Homework, submit: bool) -> str:
     resp = session.get(hw.url)
     if resp.status_code != 200:
         raise RuntimeError(f"打开作业失败（HTTP {resp.status_code}）")
+    from api.base import is_graded_work_page
+
+    if is_graded_work_page(getattr(resp, "url", ""), resp.text):
+        logger.info(f"作业已提交并批阅: {hw.title}")
+        return "skipped"
     page = parse_work_page(resp.text)
     if not page["questions"]:
         from api.base import classify_empty_work_page

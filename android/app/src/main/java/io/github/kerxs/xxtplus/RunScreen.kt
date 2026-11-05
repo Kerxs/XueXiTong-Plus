@@ -313,7 +313,7 @@ private fun VideoPane() {
                         player = p
                     }
                 },
-                update = { view -> view.show(source, RunState.videoPosition()) },
+                update = { view -> view.show(RunState.videoSources.ifEmpty { listOf(source) }, RunState.videoPosition()) },
                 onRelease = { view -> if (player === view) player = null; view.release() },
             )
             when (state) {

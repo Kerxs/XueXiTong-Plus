@@ -307,6 +307,24 @@ Item {
                         enabled: !controller.running
                         IconButton { glyph: ""; text: "恢复默认"; flat: false; onClicked: resetConfirm.open() }
                     }
+                    Divider {}
+                    SettingRow {
+                        label: "匿名使用统计"
+                        hint: "只记录各类任务的成功 / 失败次数和错误类型，不含账号、课程、题目和日志；保存在本机，默认关闭"
+                        AppSwitch {
+                            checked: ["true", "1", "yes", "on"].indexOf(String(controller.advancedValues["common.telemetry"] || "").toLowerCase()) >= 0
+                            onToggled: { controller.setAdvanced("common.telemetry", checked ? "true" : "false"); controller.saveConfig() }
+                        }
+                    }
+                    Divider {}
+                    SettingRow {
+                        label: "反馈问题"
+                        hint: "把匿名统计整理好，打开 GitHub 的反馈页面，由你确认后提交"
+                        AppButton {
+                            text: "预览并反馈"
+                            onClicked: { feedbackDialog.text = controller.feedbackText(); feedbackDialog.open() }
+                        }
+                    }
                 }
 
                 // ---------- 关于 ----------
@@ -435,6 +453,47 @@ Item {
                 }
             }
         }
+    }
+
+    // 一键反馈：先给用户看要发送的内容，再打开 GitHub（由用户在网页上点“提交”）
+    BaseDialog {
+        id: feedbackDialog
+        property string text: ""
+        title: "反馈问题"
+        width: 520
+        contentItem: ColumnLayout {
+            spacing: 10
+            Text {
+                Layout.fillWidth: true
+                text: feedbackDialog.text === ""
+                    ? "还没有统计数据。打开“匿名使用统计”并运行一次后，这里会出现可以反馈的内容。"
+                    : "将打开 GitHub 的新建反馈页面并填好下面的内容，你可以补充问题描述后再提交。只含计数，不含账号、课程、题目和日志。"
+                color: Theme.muted
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+            ScrollView {
+                visible: feedbackDialog.text !== ""
+                Layout.fillWidth: true
+                Layout.preferredHeight: 240
+                clip: true
+                TextArea {
+                    readOnly: true
+                    text: feedbackDialog.text
+                    wrapMode: Text.Wrap
+                    font.family: Theme.monoFont
+                    font.pixelSize: 12
+                    color: Theme.text
+                    background: Rectangle { color: Theme.sunken; radius: Theme.radius }
+                }
+            }
+        }
+        buttons: [
+            AppButton { text: "清除统计"; kind: "ghost"; visible: feedbackDialog.text !== ""; onClicked: { controller.clearStats(); feedbackDialog.close() } },
+            AppButton { text: "关闭"; onClicked: feedbackDialog.close() },
+            AppButton { text: "打开 GitHub 反馈"; kind: "primary"; enabled: feedbackDialog.text !== ""; onClicked: { controller.openFeedback(feedbackDialog.text); feedbackDialog.close() } }
+        ]
     }
 
     ConfirmDialog {

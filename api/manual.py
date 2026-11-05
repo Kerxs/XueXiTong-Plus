@@ -55,6 +55,7 @@ KIND_LABELS = {
     "insertevaluation": "评价",
     "workid-closed": "章节检测（已截止或未到作答时间）",
     "quiz-open": "随堂练习（正在进行，请尽快完成）",
+    "captcha": "视频需要验证（请到学习通打开播放一下）",
     "task-open": "课堂任务（进行中）",
     "workid-empty": "章节检测（没有读到题目）",
 }

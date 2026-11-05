@@ -219,6 +219,8 @@ GROUPS: list[dict] = [
         "icon": "",
         "fields": [
             _f("notification", "provider", "choice", "推送服务", "", options=NOTIFY_PROVIDERS),
+            # 匿名使用统计（设置 → 数据与隐私 里的开关，api/telemetry.py），默认关闭
+            _f("common", "telemetry", "hidden", "匿名使用统计", "false"),
             _f("notification", "url", "secret", "推送地址", "",
                "服务提供的完整推送地址（含密钥），例如 Server酱的 https://sctapi.ftqq.com/<SendKey>.send",
                show={"key": "notification.provider", "ne": ""}),

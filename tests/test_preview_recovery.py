@@ -25,7 +25,7 @@ class Expired(BaseHTTPRequestHandler):
 class ProxyReportsTest(unittest.TestCase):
     def setUp(self):
         self.reports = []
-        self.proxy = VideoProxy(allowed_hosts=("127.0.0.1",), on_problem=lambda u, s: self.reports.append((u, s)))
+        self.proxy = VideoProxy(allowed_hosts=("127.0.0.1",), on_problem=lambda u, s, r="": self.reports.append((u, s)))
 
     def tearDown(self):
         self.proxy.stop()
@@ -55,6 +55,64 @@ class ProxyReportsTest(unittest.TestCase):
         with urllib.request.urlopen(local.replace("/v/", "/f/"), timeout=5) as resp:
             self.assertEqual(resp.status, 204)
         self.assertEqual(self.reports, [(url, 0)])
+
+
+class Good(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        body = b"video-bytes"
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class BackupAddressTest(unittest.TestCase):
+    """Several addresses for one video: the first that answers is used, and remembered."""
+
+    def setUp(self):
+        self.servers = []
+        self.reports = []
+        self.proxy = VideoProxy(allowed_hosts=("127.0.0.1",),
+                                on_problem=lambda u, s, r="": self.reports.append((u, s, r)))
+
+    def tearDown(self):
+        self.proxy.stop()
+        for server in self.servers:
+            server.shutdown()
+
+    def _serve(self, handler):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.servers.append(server)
+        return f"http://127.0.0.1:{server.server_address[1]}/v.mp4"
+
+    def test_refused_first_address_falls_back_to_the_next(self):
+        bad, good = self._serve(Expired), self._serve(Good)
+        local = self.proxy.register([bad, good])
+        with urllib.request.urlopen(local, timeout=10) as resp:
+            self.assertEqual(resp.read(), b"video-bytes")
+        self.assertEqual(self.reports, [])                          # a backup worked: nothing to report
+        self.assertEqual(self.proxy._lookup(local[local.index("/v/"):])[0], good)   # remembered first
+
+    def test_all_failing_reports_the_reason(self):
+        local = self.proxy.register(["http://127.0.0.1:9/a.mp4", "http://127.0.0.1:9/b.mp4"])
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(local, timeout=60)
+        self.assertEqual(ctx.exception.code, 502)
+        url, status, reason = self.reports[0]
+        self.assertEqual((url, status), ("http://127.0.0.1:9/a.mp4", 502))
+        self.assertIn("URLError", reason)                           # the reason is in the log line
+
+    def test_second_way_used_when_the_first_fails(self):
+        good = self._serve(Good)
+        local = self.proxy.register([good])
+        with mock.patch.object(self.proxy, "_open_system", side_effect=OSError("ssl handshake")):
+            with urllib.request.urlopen(local, timeout=10) as resp:
+                self.assertEqual(resp.read(), b"video-bytes")
 
 
 class ControllerRefreshTest(unittest.TestCase):
@@ -101,7 +159,7 @@ class ControllerRefreshTest(unittest.TestCase):
     def test_network_trouble_only_logs(self):
         self.ctl._on_preview_problem("https://s1.cldisk.com/a.mp4", 502)
         self.assertFalse(self.flag.exists())
-        self.assertTrue(any("连不上视频服务器" in m for _, m in self.logs))
+        self.assertTrue(any("都暂时连不上" in m for _, m in self.logs))
 
     def test_old_video_or_no_run_is_ignored(self):
         self.ctl._on_preview_problem("https://s1.cldisk.com/old.mp4", 403)

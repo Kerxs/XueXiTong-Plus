@@ -54,7 +54,7 @@ RESTART_DELAY_MS = 10_000
 RESTART_RESET_SECONDS = 30 * 60
 HANG_SECONDS = 20 * 60
 EXIT_STOPPED = 2
-APP_VERSION = "1.2.8"
+APP_VERSION = "1.2.9"
 # Bump whenever the 开始引导 changes: everyone who finished an older guide sees it again.
 # 1: 欢迎 / 免责声明 / 账号 / 开始使用   2: + 答题设置 (1.1.7)
 # 3: 答题设置 -> 高级设置, showing 答题来源 / 答题 / 通知推送 together (1.1.9)
@@ -234,7 +234,7 @@ class AppController(QObject):
     _localModelsFound = Signal(list)   # emitted from the detection thread
     cloudModelsChanged = Signal()
     _cloudModelsFound = Signal(list, str)   # (models, error) from the fetch thread
-    _previewProblem = Signal(str, int)      # (video address, status) from the video proxy thread
+    _previewProblem = Signal(str, int, str)  # (video address, status, reason) from the video proxy thread
     dirtyChanged = Signal()
     runStateChanged = Signal()
     dashboardChanged = Signal()
@@ -315,7 +315,8 @@ class AppController(QObject):
         self._preview_refreshed_at = 0.0
         self._preview_noted: set[tuple[str, int]] = set()
         self._previewProblem.connect(self._on_preview_problem)
-        self._video_proxy = VideoProxy(on_problem=lambda url, status: self._previewProblem.emit(url, status))
+        self._video_proxy = VideoProxy(
+            on_problem=lambda url, status, reason="": self._previewProblem.emit(url, status, reason or ""))
 
     updater = Property(QObject, lambda self: self._updater, constant=True)
 
@@ -662,6 +663,26 @@ class AppController(QObject):
         self.configChanged.emit()
         self.toast.emit("已恢复默认设置（账号信息保留）。", "info")
 
+    # ----- 匿名使用统计 / 一键反馈（api/telemetry.py，默认关闭） --------------
+    @Slot(result=str)
+    def feedbackText(self) -> str:
+        from api import telemetry
+
+        return telemetry.summary(telemetry.load(DATA_DIR))
+
+    @Slot(str)
+    def openFeedback(self, text: str) -> None:
+        from api import telemetry
+
+        QDesktopServices.openUrl(QUrl(telemetry.feedback_url(text)))
+
+    @Slot()
+    def clearStats(self) -> None:
+        from api import telemetry
+
+        telemetry.clear(DATA_DIR)
+        self.toast.emit("已清除匿名统计", "info")
+
     @Slot(str)
     def openUrl(self, url: str) -> None:
         QDesktopServices.openUrl(QUrl(url))
@@ -934,6 +955,7 @@ class AppController(QObject):
         environment.insert("CHAOXING_DESKTOP_PREVIEW", "1")
         self._clear_pause_flag()
         environment.insert("CHAOXING_PAUSE_FILE", str(PAUSE_FILE))
+        environment.insert("XXTPLUS_VERSION", APP_VERSION)          # api/telemetry.py
         PREVIEW_REFRESH_FILE.unlink(missing_ok=True)
         environment.insert("CHAOXING_PREVIEW_REFRESH_FILE", str(PREVIEW_REFRESH_FILE))
         process.setProcessEnvironment(environment)
@@ -1057,7 +1079,8 @@ class AppController(QObject):
             elif event.source:
                 # Played through the local proxy so the CDN gets the Referer it expects.
                 try:
-                    local = self._video_proxy.register(event.source)
+                    # every address the task sent: the proxy falls back to the next one by itself
+                    local = self._video_proxy.register(getattr(event, "sources", None) or [event.source])
                 except ValueError:
                     self._set_video(video_message_html("视频地址不是学习通域名，已忽略"), event.title, False, "视频地址不是学习通域名，已忽略")
                 else:
@@ -1201,7 +1224,7 @@ class AppController(QObject):
         if self._process and error != QProcess.ProcessError.Crashed:
             self._log("ERROR", f"任务进程错误：{self._process.errorString()}")
 
-    def _on_preview_problem(self, url: str, status: int) -> None:
+    def _on_preview_problem(self, url: str, status: int, reason: str = "") -> None:
         """The video proxy could not get the previewed video. Refused / broken: ask the task for a
         fresh address (it re-reads the video status once); the preview page retries by itself."""
         if self._process is None or url != self._video_source:
@@ -1211,7 +1234,8 @@ class AppController(QObject):
         if key not in self._preview_noted:
             self._preview_noted.add(key)
             if status == 502:
-                self._log("WARNING", "视频预览：暂时连不上视频服务器，会自动重试（不影响任务运行）。")
+                why = f"（原因：{reason}）" if reason else ""
+                self._log("WARNING", f"视频预览：所有视频地址都暂时连不上{why}，会自动重试（不影响任务运行）。")
             elif status == 0:
                 self._log("WARNING", "视频预览：视频多次加载失败，正在重新获取视频地址（不影响任务运行）。")
             else:
