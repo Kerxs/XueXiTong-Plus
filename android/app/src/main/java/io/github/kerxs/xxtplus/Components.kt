@@ -199,7 +199,8 @@ fun StatusPill(kind: String, text: String) {
 
 /** Desktop StatTile.qml: label + value, accent flash on change, counters roll to the new number. */
 @Composable
-fun StatTile(label: String, value: String, modifier: Modifier = Modifier, count: Int? = null, appearDelay: Int = 0) {
+fun StatTile(label: String, value: String, modifier: Modifier = Modifier, count: Int? = null, appearDelay: Int = 0,
+             icon: androidx.compose.ui.graphics.vector.ImageVector? = null) {
     val c = X.colors
     val m = X.motion
     val shown by animateIntAsState(count ?: 0, tween(if (m.enabled) 600 else 0, easing = OutCubic), label = "count")
@@ -216,8 +217,11 @@ fun StatTile(label: String, value: String, modifier: Modifier = Modifier, count:
     XCard(modifier, appearDelay = appearDelay, padding = 12.dp) {
         Box {
             Box(Modifier.matchParentSize().alpha(flash.value).background(c.accentSoft, RoundedCornerShape(Dimens.radius)))
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(label, color = c.muted, fontSize = 12.sp)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (icon != null) Icon(icon, null, Modifier.size(14.dp), tint = c.faint)
+                    Text(label, color = c.muted, fontSize = 12.sp)
+                }
                 Text(if (count != null) shown.toString() else value.ifEmpty { "—" },
                     color = if (empty) c.faint else c.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -286,14 +290,25 @@ fun Badge(text: String, fg: Color, bg: Color, modifier: Modifier = Modifier) {
 
 private val TYPE_LABELS = mapOf("single" to "单选题", "multiple" to "多选题", "judgement" to "判断题", "completion" to "填空题")
 
+/** Answers whose reveal animation already played (cleared with the questions on a new quiz). */
+val RevealedAnswers: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
+
 /** Desktop QuestionCard.qml: options light up when the answer is revealed; written answers type out. */
 @Composable
 fun QuestionCard(q: Question, pending: Boolean, revealDelay: Int) {
     val c = X.colors
     val m = X.motion
-    var revealed by remember(q.index, q.answer) { mutableStateOf(!m.enabled) }
-    LaunchedEffect(q.index, q.answer) {
-        if (!revealed) { delay((revealDelay + 260).toLong()); revealed = true }
+    // The reveal plays once per answer. Lazy list items are disposed when scrolled away; keeping
+    // "already revealed" outside the item stops them replaying (late, staggered by position) on
+    // every scroll back, which made scrolling the quiz stutter.
+    val revealKey = "${q.index}/${q.answer}"
+    var revealed by remember(revealKey) { mutableStateOf(!m.enabled || revealKey in RevealedAnswers) }
+    LaunchedEffect(revealKey) {
+        if (!revealed) {
+            delay((revealDelay.coerceAtMost(600) + 260).toLong())
+            revealed = true
+        }
+        RevealedAnswers += revealKey
     }
     val answer = q.answer
     val options: List<Pair<String, Boolean>> = when (q.type) {
@@ -341,7 +356,8 @@ fun QuestionCard(q: Question, pending: Boolean, revealDelay: Int) {
                 }
             }
         } else {
-            var shown by remember(answer) { mutableIntStateOf(if (m.enabled) 0 else answer.length) }
+            // Typed out once; scrolled back into view it is already complete.
+            var shown by remember(answer) { mutableIntStateOf(if (m.enabled && revealKey !in RevealedAnswers) 0 else answer.length) }
             LaunchedEffect(answer, revealed) {
                 if (!revealed) return@LaunchedEffect
                 val step = (1200 / maxOf(1, answer.length)).coerceIn(16, 45).toLong()

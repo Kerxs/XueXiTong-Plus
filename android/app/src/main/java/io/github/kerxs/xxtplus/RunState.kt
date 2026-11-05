@@ -119,7 +119,7 @@ object RunState {
     }
 
     fun reset() {
-        logs.clear(); progress.clear(); questions.clear(); manualTasks.clear(); showManualDialog = false
+        logs.clear(); progress.clear(); questions.clear(); RevealedAnswers.clear(); manualTasks.clear(); showManualDialog = false
         course = ""; chapter = ""; finishedTasks = 0
         videoSource = ""; videoTitle = ""; workPhase = ""; workTitle = ""; workCoverRate = 0
         prompt = null; courses = null
@@ -194,7 +194,7 @@ object RunState {
         workTitle = data.optString("title", workTitle)
         workCoverRate = data.optInt("cover_rate", workCoverRate)
         val arr = data.optJSONArray("questions") ?: return
-        questions.clear()
+        questions.clear(); RevealedAnswers.clear()
         for (i in 0 until arr.length()) {
             val q = arr.getJSONObject(i)
             questions.add(Question(

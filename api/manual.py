@@ -89,7 +89,8 @@ def report(course: dict, point: dict, job: dict) -> None:
 
 def items() -> list[dict]:
     with _lock:
-        return list(_items)
+        # Return snapshots so callers cannot mutate the run's stored summary.
+        return [item.copy() for item in _items]
 
 
 def summary() -> str:

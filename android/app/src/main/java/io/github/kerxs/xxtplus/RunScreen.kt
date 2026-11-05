@@ -34,7 +34,16 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AccessTime
+import androidx.compose.material.icons.outlined.Assignment
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.ListAlt
+import androidx.compose.material.icons.outlined.MenuBook
+import androidx.compose.material.icons.outlined.OndemandVideo
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.SnackbarHostState
@@ -53,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -126,10 +136,7 @@ fun RunScreen(snackbar: SnackbarHostState, openSettings: () -> Unit, openKeepAli
         }
         AnimatedVisibility(accountMissing, enter = fadeIn(tween(m.normal)) + expandVertically(tween(m.normal)),
             exit = fadeOut(tween(m.fast)) + shrinkVertically(tween(m.normal))) {
-            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.warningSoft)
-                .clickable { openSettings() }.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                Text("还没有配置账号。请到“设置 → 账号”填写账号密码，或开启 cookies 登录。", color = c.warning, fontSize = 12.sp)
-            }
+            Banner("还没有配置账号。请到“设置 → 账号”填写账号密码，或开启 cookies 登录。", c.warningSoft, c.warning) { openSettings() }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             XButton(if (starting) "正在启动…" else "开始运行", { start() }, Modifier.weight(1f), Kind.Primary,
@@ -144,20 +151,14 @@ fun RunScreen(snackbar: SnackbarHostState, openSettings: () -> Unit, openKeepAli
         val missing = KeepAlive.missing(ctx)
         AnimatedVisibility(missing.isNotEmpty(), enter = fadeIn(tween(m.normal)) + expandVertically(tween(m.normal)),
             exit = fadeOut(tween(m.fast)) + shrinkVertically(tween(m.normal))) {
-            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.warningSoft)
-                .clickable { openKeepAlive() }.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                Text("权限设置未完成（${missing.joinToString("、") { it.first }}），息屏或切到后台后任务可能被系统停止。点这里设置。",
-                    color = c.warning, fontSize = 12.sp)
-            }
+            Banner("权限设置未完成（${missing.joinToString("、") { it.first }}），息屏或切到后台后任务可能被系统停止。点这里设置。",
+                c.warningSoft, c.warning) { openKeepAlive() }
         }
         CourseRow(snackbar)
         AnimatedVisibility(RunState.manualTasks.isNotEmpty(), enter = fadeIn(tween(m.normal)) + expandVertically(tween(m.normal)),
             exit = fadeOut(tween(m.fast)) + shrinkVertically(tween(m.normal))) {
-            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.accentSoft)
-                .clickable { RunState.showManualDialog = true }.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                Text("有 ${RunState.manualTasks.size} 项内容需要手动完成（文档、阅读、问卷等），点这里查看",
-                    color = c.accent, fontSize = 12.sp)
-            }
+            Banner("有 ${RunState.manualTasks.size} 项内容需要手动完成（文档、阅读、问卷等），点这里查看",
+                c.accentSoft, c.accent) { RunState.showManualDialog = true }
         }
         Stats()
         var tab by rememberSaveable { mutableStateOf("tasks") }
@@ -186,11 +187,11 @@ private fun CourseRow(snackbar: SnackbarHostState) {
     val scope = rememberCoroutineScope()
     val names = Courses.selectedNames()
     val ids = SettingsModel.values["common.course_list"].orEmpty()
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.surface)
-        .border(1.dp, c.border, RoundedCornerShape(Dimens.radius)).padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text("课程", color = c.muted, fontSize = 11.sp)
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radiusLarge)).background(c.surface)
+        .border(1.dp, c.border, RoundedCornerShape(Dimens.radiusLarge)).padding(start = 12.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("课程", color = c.muted, fontSize = 12.sp)
             Text(when {
                 names.isNotEmpty() -> names.joinToString("、")
                 ids.isNotBlank() -> "课程 ID $ids"
@@ -199,7 +200,7 @@ private fun CourseRow(snackbar: SnackbarHostState) {
         }
         XButton(if (Courses.state == "running") "识别中…" else "识别课程", {
             scope.launch { Courses.detect(ctx)?.let { if (Courses.state == "error") snackbar.showSnackbar(it) } }
-        }, kind = Kind.Ghost, enabled = Courses.state != "running" && !RunState.running)
+        }, kind = Kind.Secondary, enabled = Courses.state != "running" && !RunState.running)
     }
 }
 
@@ -212,21 +213,36 @@ private fun Stats() {
     val elapsed = RunState.elapsedSeconds(now)  // paused time not counted, as on the desktop
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatTile("当前课程", RunState.course, Modifier.weight(1f), appearDelay = 0)
-            StatTile("当前章节", RunState.chapter, Modifier.weight(1f), appearDelay = 60)
+            StatTile("当前课程", RunState.course, Modifier.weight(1f), appearDelay = 0, icon = Icons.Outlined.MenuBook)
+            StatTile("当前章节", RunState.chapter, Modifier.weight(1f), appearDelay = 60, icon = Icons.Outlined.ListAlt)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatTile("已完成任务", "", Modifier.weight(1f), count = RunState.finishedTasks, appearDelay = 120)
+            StatTile("已完成任务", "", Modifier.weight(1f), count = RunState.finishedTasks, appearDelay = 120, icon = Icons.Outlined.CheckCircle)
             StatTile("运行时长", if (RunState.running) "%02d:%02d:%02d".format(elapsed / 3600, elapsed % 3600 / 60, elapsed % 60) else "",
-                Modifier.weight(1f), appearDelay = 180)
+                Modifier.weight(1f), appearDelay = 180, icon = Icons.Outlined.AccessTime)
         }
     }
 }
 
 @Composable
-private fun Empty(text: String) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(text, color = X.colors.faint, fontSize = 13.sp)
+private fun Empty(text: String, icon: ImageVector? = null) {
+    val c = X.colors
+    Box(Modifier.fillMaxSize().clip(RoundedCornerShape(Dimens.radiusLarge)).background(c.surface)
+        .border(1.dp, c.border, RoundedCornerShape(Dimens.radiusLarge)).padding(Dimens.pad), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (icon != null) Icon(icon, null, Modifier.size(28.dp), tint = c.faint)
+            Text(text, color = c.faint, fontSize = 13.sp)
+        }
+    }
+}
+
+/** Desktop accountBanner: soft fill, coloured border, large radius; tap to act. */
+@Composable
+private fun Banner(text: String, bg: Color, fg: Color, onClick: () -> Unit) {
+    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radiusLarge)).background(bg)
+        .border(1.dp, fg.copy(alpha = 0.45f), RoundedCornerShape(Dimens.radiusLarge))
+        .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp)) {
+        Text(text, color = fg, fontSize = 12.sp, lineHeight = 18.sp)
     }
 }
 
@@ -234,7 +250,7 @@ private fun Empty(text: String) {
 private fun ProgressPane() {
     val c = X.colors
     val items = RunState.progress.values.toList()
-    if (items.isEmpty()) { Empty("还没有音视频任务"); return }
+    if (items.isEmpty()) { Empty("还没有音视频任务", Icons.Outlined.OndemandVideo); return }
     XCard(Modifier.fillMaxSize(), title = "音视频任务", subtitle = "${items.count { it.percent >= 100 }} / ${items.size} 已完成") {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             items(items, key = { it.name }) { p ->
@@ -266,7 +282,7 @@ private fun VideoPane() {
     val c = X.colors
     val source = RunState.videoSource
     if (!RunState.running || !allowedVideo(source)) {
-        Empty(if (RunState.running) "等待视频任务…" else "运行后在这里显示当前视频（静音）")
+        Empty(if (RunState.running) "等待视频任务…" else "运行后在这里显示当前视频（静音）", Icons.Outlined.Videocam)
         return
     }
     val rate = 1.0  // 倍速已失效：任务和预览都按 1 倍速
@@ -329,7 +345,7 @@ private fun VideoPane() {
 @Composable
 private fun WorkPane() {
     val c = X.colors
-    if (RunState.questions.isEmpty()) { Empty("章节检测出现时在这里显示题目和答案"); return }
+    if (RunState.questions.isEmpty()) { Empty("章节检测出现时在这里显示题目和答案", Icons.Outlined.Assignment); return }
     val phase = when (RunState.workPhase) {
         "questions" -> "查找答案中"; "filled" -> "已填写，准备提交"; "submitted" -> "已提交"
         "saved" -> "已保存（未提交）"; "failed" -> "提交失败"; else -> RunState.workPhase

@@ -7,17 +7,19 @@ Captcha API for Chaoxing
 Author: skreon
 Email: 1340554713@qq.com
 Date: 2025-06-05
-Version: 1.0.0
+Version: 1.0.1
 """
 
-__author__ = "skreon 1340554713@qq.com"
-__version__ = "1.0.0"
+from __future__ import annotations
 
 from random import randint
 from typing import Optional
 
 from loguru import logger
-from requests import session
+from requests import RequestException, Session
+
+__author__ = "skreon 1340554713@qq.com"
+__version__ = "1.0.1"
 
 try:
     from ddddocr import DdddOcr
@@ -29,18 +31,17 @@ except ImportError:
 
 
 def ocr_init() -> Optional[DdddOcr]:
-    """
-    初始化OCR对象
-
-    Returns: DdddOcr对象
-    """
+    """Initialize and return a reusable OCR instance, if available."""
     if not HAS_DDDDOCR:
-        logger.warning("未检测到 ddddocr 依赖，自动验证码识别将不可用。如遇403限制请在浏览器端手动完成验证。")
+        logger.warning(
+            "未检测到 ddddocr 依赖，自动验证码识别将不可用。如遇403限制请在浏览器端手动完成验证。"
+        )
         return None
+
     try:
         return DdddOcr(show_ad=False)
-    except Exception as e:
-        logger.warning(f"ddddocr 初始化失败: {e}，自动验证码识别将不可用")
+    except Exception as exc:
+        logger.warning("ddddocr 初始化失败: {}，自动验证码识别将不可用", exc)
         return None
 
 
@@ -62,32 +63,42 @@ class CxCaptcha:
         s (requests.Session): 用于管理会话的请求对象。
     """
 
-    host = 'https://mooc1.chaoxing.com'
+    host = "https://mooc1.chaoxing.com"
     api = {
-        'get': '/processVerifyPng.ac',
-        'submit': '/html/processVerify.ac'
+        "get": "/processVerifyPng.ac",
+        "submit": "/html/processVerify.ac",
     }
+    DEFAULT_TIMEOUT = (5.0, 15.0)
 
-    def __init__(self, user_agent: str, cookies: str, ocr: Optional[DdddOcr] = _MISSING):
+    def __init__(
+        self,
+        user_agent: str,
+        cookies: str,
+        ocr: Optional[DdddOcr] = _MISSING,
+        *,
+        timeout: tuple[float, float] = DEFAULT_TIMEOUT,
+    ):
         """
         初始化 CxCaptcha 实例。
 
         Args:
             user_agent (str): 用户代理字符串。
             cookies (str): 会话 cookies。
-            ocr (DdddOcr, optional): 已初始化的 DdddOcr 对象。如果未提供则自动初始化；如果显式传入 None 则禁用 OCR。据DdddOcr官方说明，每次初始化和初始化后的首次识别速度都非常慢，所以推荐传入一个现成的DdddOcr对象实现复用。
+            ocr (DdddOcr, optional): 可复用的 DdddOcr 对象；显式传入 None 可禁用 OCR。
+            timeout (tuple[float, float]): HTTP 连接和读取超时（秒）。
         """
-
         self.user_agent = user_agent
         self.cookies = cookies
-        self.s = session()
-        self.s.headers.update({
-            'User-Agent': self.user_agent,
-            'Cookie': self.cookies,
-            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
-        })
-        self.s.verify = False
-
+        self.timeout = timeout
+        self.s: Session = Session()
+        self.s.headers.update(
+            {
+                "User-Agent": self.user_agent,
+                "Cookie": self.cookies,
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            }
+        )
+        # Keep requests' default TLS certificate validation enabled.
         self.ocr = ocr_init() if ocr is _MISSING else ocr
 
     def getCaptcha(self) -> Optional[bytes]:
@@ -95,16 +106,27 @@ class CxCaptcha:
         获取验证码图片。
 
         Returns:
-            Optional[bytes]: 返回验证码图片的二进制数据，如果获取失败则返回 None。
+            Optional[bytes]: 验证码图片二进制数据，获取失败时返回 None。
         """
-        api = self.host + self.api['get']
-        random_t = randint(0, 2147483647)
+        url = self.host + self.api["get"]
+        try:
+            with self.s.get(
+                url,
+                params={"t": randint(0, 2_147_483_647)},
+                timeout=self.timeout,
+            ) as response:
+                content_type = response.headers.get("Content-Type", "")
+                content_type = content_type.split(";", 1)[0].strip().lower()
 
-        res = self.s.get(api, params={'t': random_t})
-        if res.status_code == 200 and res.headers['Content-Type'] == 'image/png':
-            return res.content
-        else:
-            # 提供的Cookies或UA存在问题，导致未能正常获取验证码内容
+                if response.status_code != 200:
+                    logger.warning("验证码图片请求失败，HTTP 状态码: {}", response.status_code)
+                    return None
+                if content_type != "image/png" or not response.content:
+                    logger.warning("验证码图片响应为空或格式不正确")
+                    return None
+                return response.content
+        except RequestException as exc:
+            logger.warning("获取验证码图片失败: {}", exc)
             return None
 
     def submitCaptcha(self, cap_token: str) -> bool:
@@ -115,17 +137,21 @@ class CxCaptcha:
             cap_token (str): 验证码 token。
 
         Returns:
-            bool: 如果提交成功并重定向，则返回 True；否则返回 False。
+            bool: 收到 HTTP 302 重定向时返回 True，否则返回 False。
         """
-        api = self.host + self.api['submit']
-        params = {
-            'ucode': cap_token,
-            'app': 0
-        }
-        res = self.s.get(api, params=params)
-        if res.status_code == 302:
-            return True
-        else:
+        url = self.host + self.api["submit"]
+        try:
+            with self.s.get(
+                url,
+                params={"ucode": cap_token, "app": 0},
+                timeout=self.timeout,
+                # Requests follows GET redirects by default, hiding the 302
+                # status this endpoint uses to signal successful validation.
+                allow_redirects=False,
+            ) as response:
+                return response.status_code == 302
+        except RequestException as exc:
+            logger.warning("提交验证码失败: {}", exc)
             return False
 
     def recognition(self, img: bytes) -> str:
@@ -133,32 +159,32 @@ class CxCaptcha:
         使用 DdddOcr 对验证码图片进行识别。
 
         Args:
-            img (bytes): 验证码图片的二进制数据.
+            img (bytes): 验证码图片的二进制数据。
 
         Returns:
-            str: 返回识别出的验证码字符串。
+            str: 识别出的验证码字符串。
         """
-        if not self.ocr:
+        if self.ocr is None:
             logger.error("ddddocr 实例未成功初始化，无法执行验证码识别")
             raise RuntimeError("ddddocr is not available")
-        res = self.ocr.classification(img)
-        return res
+        return self.ocr.classification(img)
 
     def try_pass(self) -> bool:
         """
-        尝试通过验证码验证流程。
-
-        该方法会自动获取验证码、识别并提交。
+        尝试获取、识别并提交一次验证码。
 
         Returns:
-            bool: 如果验证码成功通过验证，则返回 True；否则返回 False。
+            bool: 验证成功时返回 True，否则返回 False。
         """
         try:
             cap_img = self.getCaptcha()
             if not cap_img:
                 return False
             cap_token = self.recognition(cap_img)
+            if not cap_token:
+                logger.warning("验证码识别结果为空")
+                return False
             return self.submitCaptcha(cap_token)
-        except Exception as e:
-            logger.error(f"验证码自动验证时发生异常: {e}")
+        except Exception as exc:
+            logger.error("验证码自动验证时发生异常: {}", exc)
             return False

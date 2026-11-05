@@ -15,7 +15,7 @@ BaseDialog {
     title: selectMode ? "识别到 " + courses.length + " 门课程" : "选择要学习的课程"
     closePolicy: selectMode ? Popup.CloseOnEscape : Popup.NoAutoClose
     width: Math.min(620, parent ? parent.width - 80 : 620)
-    height: Math.min(560, parent ? parent.height - 80 : 560)
+    height: Math.min(Math.max(320, 210 + courses.length * 62), 560, parent ? parent.height - 80 : 560)
 
     function openWith(list) {
         selectMode = false

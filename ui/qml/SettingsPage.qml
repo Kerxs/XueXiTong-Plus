@@ -66,10 +66,13 @@ Item {
             Text { text: "账号、运行、外观、数据与隐私。基本参数在运行面板中调整。"; color: Theme.muted; font.family: Theme.uiFont; font.pixelSize: 12 }
         }
 
-        ScrollView {
-            id: scroll
+        Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
+
+        ScrollView {
+            id: scroll
+            anchors.fill: parent
             contentWidth: availableWidth
             clip: true
 
@@ -374,6 +377,30 @@ Item {
                 }
 
                 Item { implicitHeight: 4 }
+            }
+        }
+
+            // Cards scroll under soft edges instead of being cut off by a hard line.
+            Rectangle {
+                anchors { left: parent.left; right: parent.right; top: parent.top }
+                height: 14
+                opacity: scroll.contentItem.contentY > 1 ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: Theme.fast } }
+                gradient: Gradient {
+                    GradientStop { position: 0; color: Theme.bg }
+                    GradientStop { position: 1; color: Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 0) }
+                }
+            }
+            Rectangle {
+                anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+                height: 14
+                readonly property real rest: scroll.contentItem.contentHeight - scroll.contentItem.height - scroll.contentItem.contentY
+                opacity: rest > 1 ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: Theme.fast } }
+                gradient: Gradient {
+                    GradientStop { position: 0; color: Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 0) }
+                    GradientStop { position: 1; color: Theme.bg }
+                }
             }
         }
 

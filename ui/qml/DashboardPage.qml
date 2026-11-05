@@ -184,6 +184,10 @@ Item {
         VisualPanel {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            // Without these the panel asks for its longest line of text and, at the minimum
+            // window width, runs past the right edge.
+            Layout.preferredWidth: 1
+            Layout.minimumWidth: 320
             suspended: page.overlayOpen
             appearDelay: 200
         }
