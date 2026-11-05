@@ -240,20 +240,20 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val c = X.colors
     val scope = rememberCoroutineScope()
-    val steps = listOf("欢迎", "免责声明", "账号", "答题来源", "权限设置")
+    val steps = listOf("欢迎", "免责声明", "账号", "自动完成", "答题来源", "权限设置")
     var step by rememberSaveable { mutableIntStateOf(0) }
     var typed by rememberSaveable { mutableStateOf("") }
     var problem by remember { mutableStateOf("") }
 
     // Only the answer-source step blocks 下一步 (like the desktop guide); it can be skipped with 稍后配置.
     LaunchedEffect(step, SettingsModel.values.toMap()) {
-        problem = if (step == 3) SettingsModel.guideProblem(ctx) else ""
+        problem = if (step == 4) SettingsModel.guideProblem(ctx) else ""
     }
 
     val target = remember { normalize(DISCLAIMER) }
     val canNext = when (step) {
         1 -> normalize(typed) == target
-        3 -> problem.isEmpty()
+        4 -> problem.isEmpty()
         else -> true
     }
 
@@ -301,7 +301,7 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
                 when (s) {
                     0 -> XCard(Modifier.fillMaxWidth(), title = "欢迎使用学习通 PLUS 手机版") {
                         Text("与电脑版使用同一套任务逻辑。接下来几步完成：", color = c.text, fontSize = 14.sp)
-                        listOf("阅读免责声明", "填写学习通账号", "选择章节检测的答题来源",
+                        listOf("阅读免责声明", "填写学习通账号", "选择自动完成的内容（课件、作业）", "选择章节检测和作业的答题来源",
                             "权限设置（允许通知、关闭电池优化、自启动与后台运行）").forEach {
                             Text("• $it", color = c.text, fontSize = 14.sp)
                         }
@@ -327,6 +327,15 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
                         }
                     }
                     3 -> {
+                        XCard(Modifier.fillMaxWidth(), title = "总是自动完成") {
+                            Text("• 视频（含音频）：按 1 倍速完整观看，平台确认后完成", color = c.text, fontSize = 14.sp)
+                            Text("• 章节检测：用下一步设置的题库或 AI 查答案，达到覆盖率时提交", color = c.text, fontSize = 14.sp)
+                        }
+                        SettingsModel.group("auto")?.let { SettingsGroupCard(it, appearDelay = 60) }
+                        Text("作业会用答题来源自动作答，打开“作业自动提交”时直接提交；随堂练习只在上课时开放几分钟，需要你自己完成，发现后会提醒。之后可以在“设置 → 自动完成”里修改。",
+                            color = c.muted, fontSize = 12.sp)
+                    }
+                    4 -> {
                         SettingsModel.group("tiku")?.let { SettingsGroupCard(it) }
                         SettingsModel.group("answer")?.let { SettingsGroupCard(it, appearDelay = 60) }
                         if (problem.isNotEmpty()) Consequence(problem)
@@ -335,7 +344,7 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
                         // Honest expectations before the first run (same notice on the desktop).
                         Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.warningSoft)
                             .padding(horizontal = 12.dp, vertical = 10.dp)) {
-                            Text("自动化不能保证 100% 成功：视频可能因验证码、网络或平台规则中断，章节检测可能答错；文档、阅读、问卷等内容需要你手动完成。" +
+                            Text("自动化不能保证 100% 成功：视频可能因验证码、网络或平台规则中断，章节检测和作业可能答错；随堂练习、阅读、问卷、讨论等内容需要你手动完成。" +
                                 if (RunState.pushConfigured()) "" else
                                     "\n还没有可用的通知：建议允许通知（下方第 1 项），或在“设置 → 通知推送”配置推送服务，任务出错或需要手动处理时能及时知道，以免浪费时间。",
                                 color = c.warning, fontSize = 13.sp)
@@ -349,7 +358,7 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (step > 0) XButton("上一步", { step-- })
             Spacer(Modifier.weight(1f))
-            if (step in 2..3) XButton("稍后配置", { next() }, kind = Kind.Ghost)
+            if (step == 2 || step == 4) XButton("稍后配置", { next() }, kind = Kind.Ghost)
             XButton(if (step == steps.size - 1) "开始使用" else "下一步", { next() }, kind = Kind.Primary, enabled = canNext)
         }
     }

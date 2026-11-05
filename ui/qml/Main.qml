@@ -825,7 +825,7 @@ ApplicationWindow {
         rejectText: "知道了"
         message: {
             const items = controller.manualTasks
-            let text = "本程序只自动完成视频和章节检测。下面的内容需要你到学习通手动完成：\n"
+            let text = "下面的内容程序无法自动完成，需要你到学习通手动完成：\n"
             for (let i = 0; i < Math.min(items.length, 8); ++i) {
                 const t = items[i]
                 text += "\n• " + t.kind + (t.name ? "「" + t.name + "」" : "") + " — " + t.chapter

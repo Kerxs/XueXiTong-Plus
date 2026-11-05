@@ -57,9 +57,9 @@ class AdvancedOptionsTest(unittest.TestCase):
     def test_defaults_not_added_but_changes_are(self):
         config = configparser.ConfigParser(interpolation=None)
         values = advanced.read_values(config)
-        values["common.work_redo_enabled"] = "true"
+        values["common.work_redo_enabled"] = "false"          # the default is on (答错后自动重做)
         advanced.write_values(config, values)
-        self.assertEqual(config["common"]["work_redo_enabled"], "true")
+        self.assertEqual(config["common"]["work_redo_enabled"], "false")
         self.assertFalse(config.has_option("common", "work_max_retries"))   # still the default
         self.assertFalse(config.has_option("tiku", "submit"))
 

@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.AutoMode
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Palette
@@ -91,6 +92,12 @@ fun SettingsScreen(snackbar: SnackbarHostState, reopenGuide: () -> Unit) {
             }
             "$courses · 1 倍速"
         },
+        Section("auto", "自动完成", Icons.Filled.AutoMode) {
+            fun on(id: String) = values[id] != "false"
+            listOfNotNull("视频", "章节检测", "课件".takeIf { on("common.auto_documents") },
+                if (on("common.auto_homework")) (if (on("common.homework_submit")) "作业" else "作业（只保存）") else null)
+                .joinToString("、")
+        },
         Section("tiku", "答题来源", Icons.Filled.Quiz) {
             when (answerModeOf(values["tiku.provider"])) { "tiku" -> "题库"; "ai" -> "AI 大模型"; "both" -> "题库 + AI"; else -> "不查找" }
         },
@@ -147,6 +154,7 @@ fun SettingsScreen(snackbar: SnackbarHostState, reopenGuide: () -> Unit) {
                 when (current) {
                     "account" -> AccountPage(snackbar)
                     "run" -> RunParamsPage(snackbar)
+                    "auto" -> SettingsModel.group("auto")?.let { SettingsGroupCard(it) }
                     "tiku" -> SettingsModel.group("tiku")?.let { SettingsGroupCard(it) }
                     "answer" -> SettingsModel.group("answer")?.let { SettingsGroupCard(it) }
                     "notify" -> SettingsModel.group("notify")?.let { SettingsGroupCard(it) }

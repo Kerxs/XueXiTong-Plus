@@ -56,7 +56,10 @@ class StudyVideoWatchesToTheEndTest(unittest.TestCase):
         self.assertEqual(reports[0], (0, 3))
         _, reports = self._run("1", start=40)
         self.assertEqual(reports[0], (40, 3))
-        self.assertNotIn(4, [drag for _, drag in reports])
+        self.assertEqual([drag for pos, drag in reports if pos >= 100], [4])
+        # isdrag like the real player: 3 at the start, 0 while playing, 4 only for the report at the end
+        _, reports = self._run("1")
+        self.assertEqual([drag for _, drag in reports], [3, 0, 4])
         # ... and the next report waits for real watching time instead of repeating that position.
         self.assertGreater(reports[1][0], 40)
 

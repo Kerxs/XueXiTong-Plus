@@ -31,7 +31,7 @@ Rectangle {
         return i
     }
     readonly property bool agreed: typed === target
-    readonly property var steps: ["欢迎", "免责声明", "账号", "高级设置", "开始使用"]
+    readonly property var steps: ["欢迎", "免责声明", "账号", "自动完成", "高级设置", "开始使用"]
     readonly property int lastStep: steps.length - 1
     readonly property bool accountReady: controller.useCookies
         || (controller.username.trim() !== "" && controller.password !== "")
@@ -56,9 +56,9 @@ Rectangle {
     }
 
     function next() {
-        if (step === 2 || step === 3) {
+        if (step >= 2 && step <= 4) {
             if (step === 2) accountSkipped = false
-            else answerSkipped = false
+            else if (step === 4) answerSkipped = false
             if (!controller.saveConfig())
                 return
         }
@@ -66,9 +66,19 @@ Rectangle {
             go(step + 1)
     }
 
+    // "自动完成：视频、章节检测、课件、作业（自动提交）" from the 自动完成 switches.
+    function autoSummary() {
+        const v = controller.advancedValues
+        const on = id => ["true", "1", "yes", "on"].indexOf(String(v[id] !== undefined ? v[id] : "true").toLowerCase()) >= 0
+        const parts = ["视频", "章节检测"]
+        if (on("common.auto_documents")) parts.push("课件")
+        if (on("common.auto_homework")) parts.push(on("common.homework_submit") ? "作业（自动提交）" : "作业（只保存）")
+        return "自动完成：" + parts.join("、") + (on("common.watch_activities") ? "；随堂练习会提醒你。" : "。")
+    }
+
     function skipAccount() {
         accountSkipped = true
-        go(3)
+        go(3)        // 自动完成 has defaults: nothing to fill in, so it is not skipped
     }
 
     function skipAnswer() {
@@ -422,9 +432,79 @@ Rectangle {
                     }
                 }
 
-                // 3 高级设置: the whole 高级选项 card, all three parts stacked (答题来源 / 答题 / 通知推送)
+                // 3 自动完成: what is always automatic, and the switches for 课件 / 作业 / 课堂活动
                 Page {
                     pageIndex: 3
+                    ScrollView {
+                        id: autoScroll
+                        anchors.fill: parent
+                        contentWidth: availableWidth
+                        clip: true
+                    ColumnLayout {
+                        width: autoScroll.availableWidth
+                        spacing: 10
+                        Text { text: "自动完成哪些内容"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 22; font.weight: Font.Bold }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "运行时会逐门课程、逐个章节处理。下面两项总是自动完成，其余的可以按需要打开或关闭，之后也能在“设置 → 高级选项 → 自动完成”里修改。"
+                            color: Theme.muted
+                            font.family: Theme.uiFont
+                            font.pixelSize: 13
+                            lineHeight: 1.3
+                            wrapMode: Text.Wrap
+                        }
+                        Repeater {
+                            model: [
+                                { glyph: "\uE714", title: "视频（含音频）", text: "按 1 倍速完整观看，平台确认后完成" },
+                                { glyph: "\uE9D5", title: "章节检测", text: "用下一步设置的题库或 AI 查答案，达到覆盖率时提交" }
+                            ]
+                            RowLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                spacing: 12
+                                Rectangle {
+                                    width: 34; height: 34; radius: Theme.radius
+                                    color: Theme.accentSoft
+                                    Text { anchors.centerIn: parent; text: modelData.glyph; font.family: Theme.iconFont; font.pixelSize: 16; color: Theme.accent }
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 1
+                                    Text { text: modelData.title; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 14; font.weight: Font.DemiBold }
+                                    Text { Layout.fillWidth: true; text: modelData.text; color: Theme.muted; font.family: Theme.uiFont; font.pixelSize: 12; wrapMode: Text.Wrap }
+                                }
+                                Text { text: "总是"; color: Theme.success; font.family: Theme.uiFont; font.pixelSize: 12 }
+                            }
+                        }
+                        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.border }
+                        AdvancedOptions {
+                            Layout.fillWidth: true
+                            embedded: true
+                            stacked: true
+                            only: ["auto"]
+                            title: ""
+                            subtitle: ""
+                            icon: ""
+                            padding: 2
+                            color: "transparent"
+                            border.width: 0
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "作业会用答题来源自动作答，打开“作业自动提交”时直接提交；随堂练习只在上课时开放几分钟，需要你自己完成，程序发现后会提醒。"
+                            color: Theme.faint
+                            font.family: Theme.uiFont
+                            font.pixelSize: 12
+                            lineHeight: 1.3
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                    }
+                }
+
+                // 4 高级设置: the rest of the 高级选项 card stacked (答题来源 / 答题 / 通知推送)
+                Page {
+                    pageIndex: 4
                     ColumnLayout {
                         anchors.fill: parent
                         spacing: 10
@@ -448,6 +528,7 @@ Rectangle {
                                 width: answerScroll.availableWidth
                                 embedded: true
                                 stacked: true
+                                except: ["auto"]
                                 title: ""
                                 subtitle: ""
                                 icon: ""
@@ -459,9 +540,9 @@ Rectangle {
                     }
                 }
 
-                // 4 开始使用
+                // 5 开始使用
                 Page {
-                    pageIndex: 4
+                    pageIndex: 5
                     ColumnLayout {
                         anchors.fill: parent
                         spacing: 14
@@ -495,6 +576,7 @@ Rectangle {
                                     + (guide.answerSkipped || controller.answerSetupProblem !== ""
                                         ? "\n高级设置还没完成，章节检测找不到答案的题目会随机作答；可以在“设置 → 高级选项”里补上。"
                                         : "\n高级设置已保存。")
+                                    + "\n" + guide.autoSummary()
                                     + "\n进入运行面板后，在左侧“基本参数”里选择课程，再点击“开始运行”。"
                             color: Theme.muted
                             font.family: Theme.uiFont
@@ -512,7 +594,7 @@ Rectangle {
                                 id: noticeText
                                 anchors.fill: parent
                                 anchors.margins: 12
-                                text: "自动化不能保证 100% 成功：视频可能因验证码、网络或平台规则中断，章节检测可能答错；文档、阅读、问卷等内容需要你手动完成。"
+                                text: "自动化不能保证 100% 成功：视频可能因验证码、网络或平台规则中断，章节检测和作业可能答错；随堂练习、阅读、问卷、讨论等内容需要你手动完成。"
                                     + (controller.pushConfigured ? ""
                                         : "\n还没有配置通知推送：建议在“设置 → 高级选项 → 通知推送”配置，任务出错或需要手动处理时能及时知道，以免浪费时间。")
                                 color: Theme.warning
@@ -540,7 +622,7 @@ Rectangle {
                 }
                 Item { Layout.fillWidth: true }
                 Text {
-                    visible: guide.step === 3 && controller.answerSetupProblem !== ""
+                    visible: guide.step === 4 && controller.answerSetupProblem !== ""
                     Layout.maximumWidth: 300
                     text: " " + controller.answerSetupProblem
                     color: Theme.warning
@@ -556,7 +638,7 @@ Rectangle {
                     font.pixelSize: 12
                 }
                 AppButton {
-                    visible: guide.step === 2 || guide.step === 3
+                    visible: guide.step === 2 || guide.step === 4
                     text: "稍后配置"
                     onClicked: guide.step === 2 ? guide.skipAccount() : guide.skipAnswer()
                 }
@@ -566,7 +648,7 @@ Rectangle {
                     text: guide.step === 0 ? "开始设置" : "下一步"
                     kind: "primary"
                     enabled: (guide.step !== 1 || guide.agreed) && (guide.step !== 2 || guide.accountReady)
-                             && (guide.step !== 3 || controller.answerSetupProblem === "")
+                             && (guide.step !== 4 || controller.answerSetupProblem === "")
                     onClicked: guide.next()
                 }
                 AppButton {

@@ -54,11 +54,12 @@ RESTART_DELAY_MS = 10_000
 RESTART_RESET_SECONDS = 30 * 60
 HANG_SECONDS = 20 * 60
 EXIT_STOPPED = 2
-APP_VERSION = "1.2.7"
+APP_VERSION = "1.2.8"
 # Bump whenever the 开始引导 changes: everyone who finished an older guide sees it again.
 # 1: 欢迎 / 免责声明 / 账号 / 开始使用   2: + 答题设置 (1.1.7)
 # 3: 答题设置 -> 高级设置, showing 答题来源 / 答题 / 通知推送 together (1.1.9)
-ONBOARDING_VERSION = 3
+# 4: + 自动完成 step (课件 / 作业 and its 自动提交 / 课堂活动提醒) (1.2.8)
+ONBOARDING_VERSION = 4
 ROOT_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
 BUNDLE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else ROOT_DIR
 

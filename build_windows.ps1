@@ -54,11 +54,7 @@ if ($LASTEXITCODE -ne 0) { throw "Application build failed." }
 
 $releaseDir = Join-Path $distRoot "学习通PLUS"
 Copy-Item -LiteralPath (Join-Path $projectRoot "README_DESKTOP.md") -Destination (Join-Path $releaseDir "README.txt") -Force
-$releaseAssets = Join-Path $releaseDir "assets"
-New-Item -ItemType Directory -Path $releaseAssets -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $projectRoot "assets\learning_plus.ico") -Destination $releaseAssets -Force
-Copy-Item -LiteralPath (Join-Path $projectRoot "assets\learning_plus.png") -Destination $releaseAssets -Force
-Copy-Item -LiteralPath (Join-Path $projectRoot "assets\chaoxing_official.jpg") -Destination $releaseAssets -Force
+# (No top-level assets folder: the app loads its icons from _internal\assets.)
 Copy-Item -LiteralPath (Join-Path $projectRoot "LICENSE") -Destination (Join-Path $releaseDir "LICENSE.txt") -Force
 # The uninstaller in the install folder: a copy of the launcher (same _internal) that starts in
 # uninstall mode because of its name (ui\winsetup.UNINSTALL_EXE).

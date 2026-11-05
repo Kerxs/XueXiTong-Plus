@@ -140,7 +140,7 @@ def _read_config(config_path: str, template_path: str) -> configparser.ConfigPar
 # The phone only uses the model companies' cloud APIs (ui/cloudmodels.PROVIDERS): no 本机模型
 # detection, no free-form endpoint and no proxy. The endpoint is set by picking a company.
 _DROP_TYPES = {"localmodels", "hidden"}   # hidden: stored only (自定义服务商, edited by aiprovider)
-_DROP_IDS = {"tiku.endpoint", "tiku.http_proxy"}
+_DROP_IDS = {"tiku.endpoint", "tiku.http_proxy", "tiku.vision_endpoint", "tiku.vision_key"}
 _HINTS = {
     "tiku.key": "在所选服务商的控制台创建",
     "tiku.url": "自建 TikuAdapter 服务的地址（手机要能访问到），例如 http://192.168.1.10:8060/adapter-service/search",

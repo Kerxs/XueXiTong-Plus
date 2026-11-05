@@ -85,7 +85,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private const val ONBOARDING_VERSION = 1
+// 2: + 自动完成 step (1.2.8)
+private const val ONBOARDING_VERSION = 2
 private fun prefs(ctx: Context) = ctx.getSharedPreferences("app", Context.MODE_PRIVATE)
 
 fun hasNotificationPermission(ctx: Context) = Build.VERSION.SDK_INT < 33 ||

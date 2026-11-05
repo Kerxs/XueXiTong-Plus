@@ -54,6 +54,8 @@ KIND_LABELS = {
     "evaluation": "评价",
     "insertevaluation": "评价",
     "workid-closed": "章节检测（已截止或未到作答时间）",
+    "quiz-open": "随堂练习（正在进行，请尽快完成）",
+    "task-open": "课堂任务（进行中）",
     "workid-empty": "章节检测（没有读到题目）",
 }
 
@@ -76,6 +78,8 @@ def reset() -> None:
 
 
 def kind_label(job: dict) -> str:
+    if job.get("file_label"):           # documents: "PDF", "PPT 课件", "Word 文档" …
+        return str(job["file_label"])
     kind = str(job.get("card_type") or job.get("type") or "").lower()
     if kind in KIND_LABELS:
         return KIND_LABELS[kind]
@@ -100,7 +104,7 @@ def report(course: dict, point: dict, job: dict) -> None:
         _seen.add(key)
         _items.append(item)
     what = f"{item['kind']}「{item['name']}」" if item["name"] else item["kind"]
-    logger.warning(f"需要手动完成：{what}（{item['course']} / {item['chapter']}），本程序只自动完成视频和章节检测")
+    logger.warning(f"需要手动完成：{what}（{item['course']} / {item['chapter']}），程序无法自动完成")
     print(PREFIX + json.dumps(item, ensure_ascii=False), flush=True)
     if _notifier is not None:
         try:

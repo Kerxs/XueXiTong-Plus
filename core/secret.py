@@ -32,7 +32,7 @@ _ENTROPY = b"XueXiTongPlus/config"
 # Account and service credentials in config.ini.
 SECRET_KEYS: dict[str, tuple[str, ...]] = {
     "common": ("username", "password"),
-    "tiku": ("tokens", "key", "siliconflow_key"),
+    "tiku": ("tokens", "key", "siliconflow_key", "vision_key"),
     "notification": ("url", "tg_chat_id"),
 }
 

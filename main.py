@@ -287,7 +287,7 @@ def init_chaoxing(common_config, tiku_config, config_path=None):
     work_max_retries = common_config.get("work_max_retries", 3)
 
     # 是否允许自动重做(默认false: 仅检查并记录成绩, 适用于只允许作答一次的课程)
-    work_redo_enabled = common_config.get("work_redo_enabled", False)
+    work_redo_enabled = common_config.get("work_redo_enabled", True)
 
     # 实例化超星API
     chaoxing = Chaoxing(
@@ -302,6 +302,13 @@ def init_chaoxing(common_config, tiku_config, config_path=None):
 
 
 AUTOMATED_JOB_TYPES = ("video", "workid")
+# 课件 / 文档 (设置 → 自动完成): opened once so 学习通 records them; main() sets it from the config.
+AUTO_DOCUMENTS = True
+
+
+def _automated(job: dict) -> bool:
+    kind = job.get("type")
+    return kind in AUTOMATED_JOB_TYPES or (kind == "document" and AUTO_DOCUMENTS)
 
 
 def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, speed: float,
@@ -309,8 +316,8 @@ def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, spe
     """处理单个任务点：自动完成视频（含音频）和章节检测，其他内容提醒用户手动完成"""
     # 桌面版暂停时，不开始新的任务点
     pause.wait_if_paused()
-    if job.get("type") not in AUTOMATED_JOB_TYPES:
-        # 文档、阅读、直播、问卷、讨论等：通知 / 界面提示用户手动完成，不重试
+    if not _automated(job):
+        # 阅读、直播、问卷、讨论等（以及关闭了自动完成的课件）：通知 / 界面提示用户手动完成，不重试
         manual.report(course, point or {}, job)
         return StudyResult.SUCCESS
     # 视频任务
@@ -338,7 +345,14 @@ def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, spe
     # 文档任务
     elif job["type"] == "document":
         logger.trace(f"识别到文档任务, 任务章节: {course['title']} 任务ID: {job['jobid']}")
-        return chaoxing.study_document(course, job)
+        result = chaoxing.study_document(course, job)
+        if result.is_failure():
+            # 打开失败也不让章节一直重试：提醒用户自己点开
+            logger.warning(f"课件「{job.get('name', '')}」未能自动完成，已加入需要手动完成的列表")
+            manual.report(course, point or {}, job)
+            return StudyResult.SUCCESS
+        logger.info(f"已完成{job.get('file_label') or '课件'}: {job.get('name', '')}")
+        return result
     # 测验任务
     elif job["type"] == "workid":
         logger.trace(f"识别到章节检测任务, 任务章节: {course['title']}")
@@ -591,6 +605,34 @@ class JobProcessor:
             pass
 
 
+def unfinished_chapters(chaoxing: Chaoxing, courses: list[dict]) -> tuple[list[ChapterTask], dict[str, tuple[int, int]]]:
+    """Read every course's chapter list again: chapters 学习通 does not show as finished, and per course
+    (finished, total). A course whose list cannot be read is left out (no guess)."""
+    left: list[ChapterTask] = []
+    stats: dict[str, tuple[int, int]] = {}
+    for course in courses:
+        try:
+            points = chaoxing.get_course_point(course["courseId"], course["clazzId"], course["cpi"])["points"]
+        except Exception as e:
+            logger.debug(f"重新读取章节列表失败: {course.get('title', '')}: {e}")
+            continue
+        done = sum(1 for p in points if p.get("has_finished"))
+        stats[course.get("title", "")] = (done, len(points))
+        left += [ChapterTask(point=p, index=i, course=course) for i, p in enumerate(points) if not p.get("has_finished")]
+    return left, stats
+
+
+def completion_report(stats: dict[str, tuple[int, int]]) -> str:
+    """"完成情况：高等数学 30/32 章、C语言 12/12 章（共 95%）" ("" when nothing was read)."""
+    if not stats:
+        return ""
+    done = sum(d for d, _ in stats.values())
+    total = sum(t for _, t in stats.values())
+    parts = "、".join(f"{name} {d}/{t} 章" for name, (d, t) in stats.items())
+    rate = f"（共 {done * 100 // total}%）" if total else ""
+    return f"完成情况：{parts}{rate}"
+
+
 def process_chapter(chaoxing: Chaoxing, course: dict[str, Any], point: dict[str, Any], speed: float) -> ChapterResult:
     """处理单个章节"""
     # 暂停时不再读取章节（读取任务点本身就是一次请求）
@@ -708,6 +750,12 @@ def main():
         common_config["speed"] = 1.0
         common_config["notopen_action"] = common_config.get("notopen_action", "retry")
         
+        global AUTO_DOCUMENTS
+        AUTO_DOCUMENTS = str_to_bool(common_config.get("auto_documents", True))
+        auto_homework = str_to_bool(common_config.get("auto_homework", True))
+        homework_submit = str_to_bool(common_config.get("homework_submit", True))
+        watch_activities = str_to_bool(common_config.get("watch_activities", True))
+
         # 初始化增加章节学习次数配置
         add_learning_count = str_to_bool(common_config.get("add_learning_count", False))
         target_count = int(common_config.get("target_count", 100))
@@ -761,15 +809,46 @@ def main():
         p = JobProcessor(chaoxing, tasks, common_config)
         p.run()
 
+        # 补漏：重新读取章节列表，学习通仍未显示完成的章节再处理一遍
+        # （平台确认得晚、偶发失败、上一轮漏掉的任务点）。只有文字、问卷、讨论等需要手动的章节
+        # 会一直显示未完成，再处理一遍也只是重复提醒，不会出错。
+        leftover, _ = unfinished_chapters(chaoxing, course_task)
+        if leftover:
+            logger.info(f"补漏：还有 {len(leftover)} 个章节没有显示完成，再处理一遍")
+            # 还没开放的章节这一遍直接跳过（第一遍已经按设置等待和重试过）
+            JobProcessor(chaoxing, leftover, {**common_config, "notopen_action": "continue"}).run()
+
         tqdm.format_sizeof = _old_format_sizeof
 
+        # 作业和课堂活动不在章节里：章节处理完后逐门课程查看
+        if auto_homework or watch_activities:
+            from api import homework
+
+            totals = {"submitted": 0, "saved": 0, "skipped": 0, "failed": 0}
+            for course in course_task:
+                pause.wait_if_paused()
+                if auto_homework:
+                    for key, value in homework.run_homework(chaoxing, course, homework_submit).items():
+                        totals[key] += value
+                if watch_activities:
+                    homework.watch_activities(chaoxing, course)
+            if auto_homework and any(totals.values()):
+                logger.info(f"作业：提交 {totals['submitted']} 份，只保存 {totals['saved']} 份，"
+                            f"已交过 {totals['skipped']} 份，未能完成 {totals['failed']} 份")
+
+        # 完成率：最后再读一次章节列表（每门课一次请求）
+        _, stats = unfinished_chapters(chaoxing, course_task)
+        report = completion_report(stats)
+        if report:
+            logger.info(report)
         pending = manual.summary()
+        tail = f"\n{report}" if report else ""
         if pending:
-            logger.warning(f"视频和章节检测已处理完；{pending}")
-            notification.send(f"chaoxing : 视频和章节检测已处理完；{pending}")
+            logger.warning(f"自动任务已处理完；{pending}")
+            notification.send(f"chaoxing : 自动任务已处理完；{pending}{tail}")
         else:
             logger.info("所有课程学习任务已完成")
-            notification.send("chaoxing : 所有课程学习任务已完成")
+            notification.send(f"chaoxing : 所有课程学习任务已完成{tail}")
 
         # 刷课完成后，如果开启了增加章节学习次数，则执行
         if add_learning_count:

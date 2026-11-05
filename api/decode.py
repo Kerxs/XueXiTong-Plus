@@ -284,6 +284,14 @@ def _process_attachment_cards(cards: List[Dict[str, Any]]) -> List[Dict[str, Any
             work_job = _process_work_task(card)
             if work_job:
                 job_list.append(work_job)
+        elif file_kind(card) == "document":
+            # Word / PPT / PDF / txt / Excel … 附件：按课件处理（打开一次即完成）
+            job_list.append(_process_document_task(card))
+        elif file_kind(card) in ("audio", "video") and card.get("mid"):
+            # mp3 等音频、mp4 等视频附件：按音视频任务点观看
+            media_job = _process_video_task(card)
+            if media_job:
+                job_list.append(media_job)
         else:
             # 不认识的任务点（问卷、讨论、链接等）不再静默丢弃：交给 main 提醒用户手动完成
             logger.debug(f"Unknown card type: {card_type}")
@@ -363,6 +371,72 @@ VIDEO_EXTENSIONS = (".mp4", ".m4v", ".flv", ".f4v", ".mkv", ".mov", ".avi", ".wm
                     ".3gp", ".rmvb", ".rm", ".vob")
 
 
+DOCUMENT_EXTENSIONS = (".doc", ".docx", ".dot", ".wps", ".rtf", ".odt", ".ppt", ".pptx", ".pps", ".ppsx", ".pot",
+                       ".potx", ".dps", ".odp", ".pdf", ".caj", ".txt", ".md", ".xls", ".xlsx", ".csv", ".et",
+                       ".ods", ".epub")
+# Player modules of attached files (学习通 cards): documents and media
+DOCUMENT_MODULES = ("insertdoc", "insertpdf", "insertppt", "insertword", "insertexcel", "inserttxt", "insertfile",
+                    "insertattach")
+
+_FILE_LABELS = {
+    ".doc": "Word 文档", ".docx": "Word 文档", ".dot": "Word 文档", ".wps": "WPS 文档", ".rtf": "文档", ".odt": "文档",
+    ".ppt": "PPT 课件", ".pptx": "PPT 课件", ".pps": "PPT 课件", ".ppsx": "PPT 课件", ".pot": "PPT 课件",
+    ".potx": "PPT 课件", ".dps": "WPS 演示", ".odp": "演示文稿", ".pdf": "PDF", ".caj": "CAJ 文献",
+    ".txt": "文本文件", ".md": "文本文件", ".xls": "Excel 表格", ".xlsx": "Excel 表格", ".csv": "表格",
+    ".et": "WPS 表格", ".ods": "表格", ".epub": "电子书",
+}
+
+
+def _file_name(card: Dict[str, Any]) -> str:
+    prop = card.get("property", {}) or {}
+    for key in ("name", "title", "fileName", "filename"):
+        value = str(prop.get(key) or "").strip()
+        if "." in value:
+            return value
+    return str(prop.get("name") or prop.get("title") or "").strip()
+
+
+def _extension(card: Dict[str, Any]) -> str:
+    """".pdf" / ".mp3" …: from the file name, else from a type field of the card."""
+    prop = card.get("property", {}) or {}
+    name = _file_name(card).lower()
+    if "." in name:
+        ext = "." + name.rsplit(".", 1)[-1]
+        if 2 <= len(ext) <= 6:
+            return ext
+    for key in ("suffix", "fileType", "filetype", "extension"):
+        value = str(prop.get(key) or "").strip().lower().lstrip(".")
+        if value and value.isalnum() and len(value) <= 5:
+            return "." + value
+    return ""
+
+
+def file_kind(card: Dict[str, Any]) -> str:
+    """"document" / "audio" / "video" for an attached file, by player module and extension ("" = not a file)."""
+    prop = card.get("property", {}) or {}
+    module = str(prop.get("module") or card.get("module") or "").lower()
+    ext = _extension(card)
+    if module in DOCUMENT_MODULES or ext in DOCUMENT_EXTENSIONS:
+        return "document"
+    if "audio" in module or ext in AUDIO_EXTENSIONS:
+        return "audio"
+    if "video" in module or ext in VIDEO_EXTENSIONS:
+        return "video"
+    return ""
+
+
+def file_label(card: Dict[str, Any]) -> str:
+    """A name for logs and the 需要手动完成 list: "PDF", "PPT 课件", "MP3 音频" …"""
+    ext = _extension(card)
+    if ext in _FILE_LABELS:
+        return _FILE_LABELS[ext]
+    if ext in AUDIO_EXTENSIONS:
+        return f"{ext[1:].upper()} 音频"
+    if ext in VIDEO_EXTENSIONS:
+        return f"{ext[1:].upper()} 视频"
+    return ""
+
+
 def media_type(card: Dict[str, Any]) -> str:
     """"Video" / "Audio" from the task card, or "" when the card does not say.
 
@@ -418,7 +492,8 @@ def _process_document_task(card: Dict[str, Any]) -> Dict[str, Any]:
         "mid": card.get("mid", ""),
         "enc": card.get("enc", ""),
         "aid": card.get("aid", ""),
-        "objectid": card.get("property", {}).get("objectid", "")
+        "objectid": card.get("property", {}).get("objectid", ""),
+        "file_label": file_label(card),
     }
 
 
@@ -597,5 +672,11 @@ def _extract_choices(element, font_decoder=None) -> str:
     cleaned_content = cleaned_content.strip()
     if cleaned_content.endswith("选择"):
         cleaned_content = cleaned_content[:-2].rstrip()
+
+    # 选项是图片时文字里没有内容：保留图片，看图答题时一起交给模型（api/images.py）
+    for img in element.find_all("img"):
+        src = img.get("src", "")
+        if src and src not in cleaned_content:
+            cleaned_content += f' <img src="{src}">'
 
     return cleaned_content

@@ -31,6 +31,7 @@ _UNUSED_QML_DIRS = (
     "qt/labs", "qtqml/statemachine", "qtquick/particles", "qtquick/timeline",
     "qtquick/scene2d", "qtquick/scene3d", "qtquick/virtualkeyboard", "qtquick/pdf",
     "qtquick/localstorage", "qtquick/vectorimage",
+    "qtquick/controls/designer",  # Qt Design Studio property sheets
     "qtquick/controls/material", "qtquick/controls/universal", "qtquick/controls/imagine",
     "qtquick/controls/windows",  # (Fusion stays: FluentWinUI3 is built on it)
     "qt5compat", "qtquick/shapes/designhelpers", "qtqml/xmllistmodel", "qtqml/designsupport",
@@ -49,6 +50,9 @@ _UNUSED_PLUGIN_FILES = (
     "platforms/qdirect2d.dll", "platforms/qminimal.dll", "platforms/qoffscreen.dll",
     "imageformats/qgif.dll", "imageformats/qicns.dll", "imageformats/qtga.dll",
     "imageformats/qtiff.dll", "imageformats/qwbmp.dll", "imageformats/qwebp.dll",
+    # TLS through Qt Network is never used (updates and the video proxy use Python, the video
+    # preview uses WebView2's own network); keep only the native Windows backend.
+    "tls/qopensslbackend.dll", "tls/qcertonlybackend.dll",
 )
 
 
@@ -73,6 +77,8 @@ def is_unused(dest: str, *, keep_dialogs: bool = False, keep_widgets: bool = Tru
         if rest.startswith("qml/"):
             q = rest[len("qml/"):]
             if any(q == d or q.startswith(d + "/") for d in _UNUSED_QML_DIRS):
+                return True
+            if q.endswith(".qmltypes"):          # type info for qmllint / Qt Creator only
                 return True
             if not keep_dialogs and (q.startswith("qtquick/dialogs") or q.startswith("qtquick/nativestyle")):
                 return True

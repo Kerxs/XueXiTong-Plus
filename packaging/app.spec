@@ -35,7 +35,7 @@ gui = Analysis(
 worker = Analysis(
     [str(ROOT / "worker.py")],
     pathex=[str(ROOT)],
-    datas=[(str(ROOT / "resource"), "resource")],
+    datas=[(str(ROOT / "resource" / "font_map_table.json"), "resource")],
     hiddenimports=["api.captcha", "ddddocr"],
     # cv2: replaced by packaging/stubs/cv2 below (ddddocr's text OCR never uses OpenCV).
     excludes=["tkinter", "PySide6", "shiboken6", "matplotlib", "IPython", "pytest", "cv2"],

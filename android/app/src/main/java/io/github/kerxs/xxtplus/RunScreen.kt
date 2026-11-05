@@ -410,7 +410,7 @@ fun RunDialogs(openSettings: () -> Unit = {}) {
             title = { Text("有内容需要手动完成") },
             text = {
                 Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("本程序只自动完成视频和章节检测。下面的内容需要你到学习通手动完成：", color = c.muted, fontSize = 13.sp)
+                    Text("下面的内容程序无法自动完成，需要你到学习通手动完成：", color = c.muted, fontSize = 13.sp)
                     RunState.manualTasks.forEach { t ->
                         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.surfaceAlt)
                             .padding(horizontal = 10.dp, vertical = 8.dp)) {

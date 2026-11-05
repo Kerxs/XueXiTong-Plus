@@ -429,6 +429,15 @@ def _parse_work_record_detail(html_text: str) -> list[dict]:
 
         my_raw = _extract_answer('我的答案')
         correct_raw = _extract_answer('正确答案')
+        # Right / wrong mark next to the answer (seen on a real result page:
+        # <div class="CorrectOrNot"><span class="marking_dui"></span>). Many courses hide 正确答案:
+        # the mark still says whether the answer was right.
+        if re.search(r'class="[^"]*marking_dui', qb):
+            correct = True
+        elif re.search(r'class="[^"]*marking_(?:cuo|bandui)', qb):
+            correct = False
+        else:
+            correct = None
 
         questions.append({
             "id": qid,
@@ -436,7 +445,8 @@ def _parse_work_record_detail(html_text: str) -> list[dict]:
             "type_label": type_label,
             "my_answer": my_raw or '',
             "correct_answer": correct_raw or '',
-            "parse_ok": my_raw is not None and correct_raw is not None,
+            "correct": correct,
+            "parse_ok": my_raw is not None and (correct_raw is not None or correct is not None),
         })
     return questions
 
@@ -1099,8 +1109,12 @@ class Chaoxing:
                 # Sometimes the last request needs to be sent several times to complete the task
                 if play_time - last_log_time >= wait_time or play_time == duration:
 
+                    # isdrag like 学习通's own player: 3 started (the opening report), 0 while playing,
+                    # 4 ended. The end used to be reported as 3 ("just started") and the platform often
+                    # did not confirm it ("视频已到末尾，但平台连续8次未确认完成").
                     passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration,
-                                                            int(play_time), _type, headers=headers)
+                                                            int(play_time), _type, headers=headers,
+                                                            _isdrag=4 if int(play_time) >= duration else 0)
 
                     if state == 403:
                         if forbidden_retry >= max_forbidden_retry:
@@ -1221,12 +1235,23 @@ class Chaoxing:
             - re module for regular expression matching
         """
         _session = SessionManager.get_session()
-        _url = f"https://mooc1.chaoxing.com/ananas/job/document?jobid={_job['jobid']}&knowledgeid={re.findall(r'nodeId_(.*?)-', _job['otherinfo'])[0]}&courseid={_course['courseId']}&clazzid={_course['clazzId']}&jtoken={_job['jtoken']}&_dc={get_timestamp()}"
+        node = re.findall(r'nodeId_(.*?)-', _job.get('otherinfo') or "")
+        if not node or not _job.get("jtoken"):
+            logger.warning(f"课件缺少完成所需的参数（nodeId / jtoken）: {_job.get('name', '')}")
+            return StudyResult.ERROR
+        _url = f"https://mooc1.chaoxing.com/ananas/job/document?jobid={_job['jobid']}&knowledgeid={node[0]}&courseid={_course['courseId']}&clazzid={_course['clazzId']}&jtoken={_job['jtoken']}&_dc={get_timestamp()}"
         _resp = _session.get(_url)
         if _resp.status_code != 200:
             return StudyResult.ERROR
-        else:
+        # 学习通返回 JSON，例如 {"status": true, "msg": "..."}；明确说 false 时算失败
+        try:
+            data = _resp.json()
+        except ValueError:
             return StudyResult.SUCCESS
+        if isinstance(data, dict) and data.get("status") is False:
+            logger.warning(f"课件完成请求被拒绝: {data.get('msg', '')}")
+            return StudyResult.ERROR
+        return StudyResult.SUCCESS
 
     def study_work(self, _course, _job, _job_info) -> StudyResult:
         if self.tiku.DISABLE or not self.tiku:
@@ -1311,9 +1336,9 @@ class Chaoxing:
                 return StudyResult.SUCCESS
             except Exception as e:
                 if attempt > 0:
-                    logger.error(f"重做轮无法获取题目(上一轮提交成绩 {last_submitted_score} 分), "
-                                 f"该课程可能仅允许作答一次: {e}")
-                    return StudyResult.ERROR
+                    # 课程只允许作答一次（或重做入口关闭）：保留已提交的成绩，不算失败、不让章节重试
+                    logger.warning(f"无法重做章节检测（可能只允许作答一次），保留已提交的成绩 {last_submitted_score} 分: {e}")
+                    return StudyResult.SUCCESS
                 # The page loaded but has no questions: retrying would never help (and used to stop
                 # the whole run after the re-login). Decide from what the page says instead.
                 kind = classify_empty_work_page(last_page.get("status", 0), last_page.get("text", ""))
@@ -1348,87 +1373,9 @@ class Chaoxing:
                 "questions": _work_preview_questions(questions["questions"]),
             })
 
-            # 3. 搜题
+            # 3. 搜题、填写答案（与作业共用 _fill_answers）
             total_questions = len(questions["questions"])
-            found_answers = 0
-            answers = self.tiku.query_all(questions["questions"], query_delay=query_delay)
-
-            if not isinstance(answers, list):
-                logger.error("题库 query_all 返回的数据格式异常，期望列表。将采用随机答案答题")
-                answers = [None] * total_questions
-            elif len(answers) != total_questions:
-                logger.error(
-                    f"题库返回的答案数量（{len(answers)}）与题目数量（{total_questions}）不匹配，正在补齐或截断以防错位！")
-                answers = list(answers) + [None] * (total_questions - len(answers))
-                answers = answers[:total_questions]
-
-            origins = getattr(self.tiku, "last_origins", None)
-            if not isinstance(origins, list) or len(origins) != total_questions:
-                origins = [None] * total_questions
-            for q, res, origin in zip(questions["questions"], answers, origins):
-                q[f'answerOrigin{q["id"]}'] = origin or ""
-                logger.debug(f"当前题目信息 -> {q}")
-                answer = ""
-                if not res:
-                    # 随机答题
-                    answer = random_answer(q["options"], q["type"])
-                    q[f'answerSource{q["id"]}'] = "random"
-                else:
-                    # 根据响应结果选择答案
-                    if q["type"] == "multiple":
-                        # 多选处理
-                        options_list = multi_cut(q["options"], _ORIGIN_HTML_CONTENT)
-                        res_list = multi_cut(res, _ORIGIN_HTML_CONTENT)
-                        if res_list is not None and options_list is not None:
-                            for _a in clean_res(res_list):
-                                matched = False
-                                for o in options_list:
-                                    if (
-                                            is_subsequence(_a, o)  # 去掉各种符号和前面ABCD的答案应当是选项的子序列
-                                    ):
-                                        answer += o[:1]
-                                        matched = True
-                                        break  # 找到匹配项后立即停止，防止重复添加
-                                if not matched:
-                                    best_letter = best_option_by_similarity(_a, options_list, threshold=0.8)
-                                    if best_letter:
-                                        answer += best_letter
-                            # 对答案进行排序, 否则会提交失败
-                            answer = "".join(sorted(set(answer)))
-                        # else 如果分割失败那么就直接到下面去随机选
-                    elif q["type"] == "single":
-                        # 单选也进行切割，主要是防止返回的答案有异常字符
-                        options_list = multi_cut(q["options"], _ORIGIN_HTML_CONTENT)
-                        if options_list is not None:
-                            t_res = clean_res(res)
-                            for o in options_list:
-                                if is_subsequence(t_res[0], o):
-                                    answer = o[:1]
-                                    break
-                            if not answer and t_res:
-                                answer = best_option_by_similarity(t_res[0], options_list, threshold=0.8)
-                    elif q["type"] == "judgement":
-                        answer = "true" if self.tiku.judgement_select(res) else "false"
-                    elif q["type"] == "completion":
-                        if isinstance(res, list):
-                            answer = "".join(res)
-                        elif isinstance(res, str):
-                            answer = res
-                    else:
-                        # 其他类型直接使用答案 （目前仅知有简答题，待补充处理）
-                        answer = res
-
-                    if not answer:  # 检查 answer 是否为空
-                        logger.warning(f"找到答案但答案未能匹配 -> {res}\t随机选择答案")
-                        answer = random_answer(q["options"], q["type"])  # 如果为空，则随机选择答案
-                        q[f'answerSource{q["id"]}'] = "random"
-                    else:
-                        logger.info(f"成功获取到答案：{answer}")
-                        q[f'answerSource{q["id"]}'] = "cover"
-                        found_answers += 1
-                # 填充答案
-                q["answerField"][f'answer{q["id"]}'] = answer
-                logger.info(f'{q["title"]} 填写答案为 {answer}')
+            found_answers, total_questions = self._fill_answers(questions["questions"], _ORIGIN_HTML_CONTENT, query_delay)
             cover_rate = (found_answers / total_questions) * 100
             logger.info(f"章节检测题库覆盖率： {cover_rate:.0f}%")
             # 提交模式  现在与题库绑定,留空直接提交, 1保存但不提交
@@ -1476,25 +1423,7 @@ class Chaoxing:
             del questions["questions"]
 
             # 4. 提交
-            res = _session.post(
-                "https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNew",
-                data=questions,
-                headers={
-                    "Host": "mooc1.chaoxing.com",
-                    "sec-ch-ua-platform": '"Windows"',
-                    "X-Requested-With": "XMLHttpRequest",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0",
-                    "Accept": "application/json, text/javascript, */*; q=0.01",
-                    "sec-ch-ua": '"Microsoft Edge";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
-                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                    "sec-ch-ua-mobile": "?0",
-                    "Origin": "https://mooc1.chaoxing.com",
-                    "Sec-Fetch-Site": "same-origin",
-                    "Sec-Fetch-Mode": "cors",
-                    "Sec-Fetch-Dest": "empty",
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6,ja;q=0.5",
-                },
-            )
+            res = self._post_work_form(_session, questions)
             if res.status_code == 200:
                 res_json = res.json()
                 if res_json["status"]:
@@ -1556,6 +1485,116 @@ class Chaoxing:
         # 达到最大重试次数仍未全对
         logger.error(f"章节检测重试 {max_retries + 1} 次仍未全部正确，请人工检查处理")
         return StudyResult.ERROR
+
+    @staticmethod
+    def _post_work_form(session, form: dict):
+        """POST a filled 章节检测 / 作业 form (pyFlag "" = submit, "1" = save only)."""
+        return session.post(
+            "https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNew",
+            data=form,
+            headers={
+                "Host": "mooc1.chaoxing.com",
+                "sec-ch-ua-platform": '"Windows"',
+                "X-Requested-With": "XMLHttpRequest",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "sec-ch-ua": '"Microsoft Edge";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "sec-ch-ua-mobile": "?0",
+                "Origin": "https://mooc1.chaoxing.com",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Dest": "empty",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6,ja;q=0.5",
+            },
+        )
+
+    def _fill_answers(self, question_list: list, origin_html: str, query_delay=0) -> tuple[int, int]:
+        """Look up and fill in the answer of every question (q["answerField"]). Shared by 章节检测 and 作业.
+
+        Unanswered / unmatched questions get a random answer (source "random"). Returns (found, total).
+        """
+        total_questions = len(question_list)
+        found_answers = 0
+        answers = self.tiku.query_all(question_list, query_delay=query_delay)
+
+        if not isinstance(answers, list):
+            logger.error("题库 query_all 返回的数据格式异常，期望列表。将采用随机答案答题")
+            answers = [None] * total_questions
+        elif len(answers) != total_questions:
+            logger.error(
+                f"题库返回的答案数量（{len(answers)}）与题目数量（{total_questions}）不匹配，正在补齐或截断以防错位！")
+            answers = list(answers) + [None] * (total_questions - len(answers))
+            answers = answers[:total_questions]
+
+        origins = getattr(self.tiku, "last_origins", None)
+        if not isinstance(origins, list) or len(origins) != total_questions:
+            origins = [None] * total_questions
+        for q, res, origin in zip(question_list, answers, origins):
+            q[f'answerOrigin{q["id"]}'] = origin or ""
+            logger.debug(f"当前题目信息 -> {q}")
+            answer = ""
+            if not res:
+                # 随机答题
+                answer = random_answer(q["options"], q["type"])
+                q[f'answerSource{q["id"]}'] = "random"
+            else:
+                # 根据响应结果选择答案
+                if q["type"] == "multiple":
+                    # 多选处理
+                    options_list = multi_cut(q["options"], origin_html)
+                    res_list = multi_cut(res, origin_html)
+                    if res_list is not None and options_list is not None:
+                        for _a in clean_res(res_list):
+                            matched = False
+                            for o in options_list:
+                                if (
+                                        is_subsequence(_a, o)  # 去掉各种符号和前面ABCD的答案应当是选项的子序列
+                                ):
+                                    answer += o[:1]
+                                    matched = True
+                                    break  # 找到匹配项后立即停止，防止重复添加
+                            if not matched:
+                                best_letter = best_option_by_similarity(_a, options_list, threshold=0.8)
+                                if best_letter:
+                                    answer += best_letter
+                        # 对答案进行排序, 否则会提交失败
+                        answer = "".join(sorted(set(answer)))
+                    # else 如果分割失败那么就直接到下面去随机选
+                elif q["type"] == "single":
+                    # 单选也进行切割，主要是防止返回的答案有异常字符
+                    options_list = multi_cut(q["options"], origin_html)
+                    if options_list is not None:
+                        t_res = clean_res(res)
+                        for o in options_list:
+                            if is_subsequence(t_res[0], o):
+                                answer = o[:1]
+                                break
+                        if not answer and t_res:
+                            answer = best_option_by_similarity(t_res[0], options_list, threshold=0.8)
+                elif q["type"] == "judgement":
+                    answer = "true" if self.tiku.judgement_select(res) else "false"
+                elif q["type"] == "completion":
+                    if isinstance(res, list):
+                        answer = "".join(res)
+                    elif isinstance(res, str):
+                        answer = res
+                else:
+                    # 其他类型直接使用答案 （目前仅知有简答题，待补充处理）
+                    answer = res
+
+                if not answer:  # 检查 answer 是否为空
+                    logger.warning(f"找到答案但答案未能匹配 -> {res}\t随机选择答案")
+                    answer = random_answer(q["options"], q["type"])  # 如果为空，则随机选择答案
+                    q[f'answerSource{q["id"]}'] = "random"
+                else:
+                    logger.info(f"成功获取到答案：{answer}")
+                    q[f'answerSource{q["id"]}'] = "cover"
+                    found_answers += 1
+            # 填充答案
+            q["answerField"][f'answer{q["id"]}'] = answer
+            logger.info(f'{q["title"]} 填写答案为 {answer}')
+        return found_answers, total_questions
 
     def _check_work_result(self, _session, _course, _job, _job_info, questions) -> Optional[dict]:
         """
@@ -1723,6 +1762,16 @@ class Chaoxing:
                 continue
             my_ans = (q.get("my_answer") or "").strip()
             correct_ans = (q.get("correct_answer") or "").strip()
+            if not correct_ans and q.get("correct") is not None:
+                # 正确答案没有公布：按对错标记判断，错题提示换一个答案
+                if not q["correct"]:
+                    all_correct = False
+                    feedback.append(
+                        f"- 题目：{q.get('title', '')}\n"
+                        f"  题型：{q.get('type_label', '')}\n"
+                        f"  你的上次答案：{my_ans or '(空)'}（判为错误，正确答案未公布，请换一个答案）"
+                    )
+                continue
             if normalize_answer_text(my_ans) != normalize_answer_text(correct_ans):
                 all_correct = False
                 feedback.append(

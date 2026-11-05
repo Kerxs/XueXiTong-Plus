@@ -13,7 +13,11 @@ Card {
     icon: ""
 
     property int tab: 0
-    readonly property var groups: controller.advancedGroups
+    // Group ids to show ([] = all) and to leave out: the 开始引导 shows 自动完成 on its own step.
+    property var only: []
+    property var except: []
+    readonly property var groups: controller.advancedGroups.filter(g =>
+        (only.length === 0 || only.indexOf(g.id) >= 0) && except.indexOf(g.id) < 0)
     readonly property var values: controller.advancedValues
 
     function value(id) { return values[id] !== undefined ? values[id] : "" }

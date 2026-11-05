@@ -13,6 +13,8 @@ from re import sub
 from typing import Optional
 
 import httpx
+
+from api import images
 import openai
 import requests
 from openai import OpenAI
@@ -79,6 +81,15 @@ def _build_llm_system_prompt(question_type: str) -> str:
         '答案示例：{"Answer":["答案"]}。'
         '无法可靠判断时输出：{"Answer":[]}。'
     )
+
+def _refuses_images(exc: Exception) -> bool:
+    """The API turned down a request because of its image content (or a format it cannot take)."""
+    status = getattr(exc, "status_code", None)
+    if status in (400, 413, 415, 422):
+        return True
+    text = str(exc).lower()
+    return any(word in text for word in ("image", "vision", "multimodal", "image_url", "unsupported content"))
+
 
 __all__ = ["CacheDAO", "Tiku", "TikuFallback", "TikuYanxi", "TikuGo", "TikuLike", "TikuAdapter", "AI", "SiliconFlow",
            "TikuManual"]
@@ -1326,22 +1337,44 @@ class AI(Tiku):
             kwargs['extra_body'] = {'thinking': {'type': 'disabled'}}
         return kwargs
 
-    def _is_local_endpoint(self) -> bool:
+    def _is_local_endpoint(self, endpoint: str | None = None) -> bool:
         try:
-            host = (httpx.URL(self.endpoint or '').host or '').lower()
+            host = (httpx.URL((endpoint or self.endpoint) or '').host or '').lower()
         except Exception:
             return False
         return host in ('localhost', '::1') or host.startswith('127.')
 
-    def _make_client(self) -> OpenAI:
-        """OpenAI client for the configured endpoint.
+    def _transcribed(self, text: str) -> str:
+        """The question text with its images converted to text by the image-reading model."""
+        model = self.vision_model or self.model
+        try:
+            client = self._make_client(self.vision_endpoint or self.endpoint,
+                                       self.vision_key or (self.key if not self.vision_endpoint else ''))
+        except ValueError as exc:   # e.g. another service without its API Key
+            logger.warning(f"识图模型不可用（{exc}），含图片的题目只发送文字")
+            return images.text_only(text)
+
+        def ask(content):
+            self._wait_for_interval()
+            self.last_request_time = time.time()
+            reply = client.chat.completions.create(model=model, messages=[{"role": "user", "content": content}])
+            return reply.choices[0].message.content if reply.choices else ""
+
+        converted, done = images.with_transcriptions(text, ask)
+        if done:
+            logger.info(f"已用 {model} 把 {done} 张题目图片转成文字")
+        return converted
+
+    def _make_client(self, endpoint: str | None = None, key: str | None = None) -> OpenAI:
+        """OpenAI client for the configured endpoint (or another one: the image-reading model).
 
         A model server on this machine (llama.cpp, Ollama, LM Studio...) is reached
         directly: sending it through ``http_proxy`` makes it answer 404, and it usually
         needs no key, so an empty key is replaced with a placeholder for it.
         """
-        local = self._is_local_endpoint()
-        key = (self.key or '').strip()
+        endpoint = endpoint or self.endpoint
+        local = self._is_local_endpoint(endpoint)
+        key = ((key if key is not None else self.key) or '').strip()
         if not key:
             if not local:
                 raise ValueError('未填写 API Key（设置 → 高级选项 → 答题来源）')
@@ -1349,11 +1382,11 @@ class AI(Tiku):
         # 默认超时是 600 秒：模型服务卡住时一道题会等 10 分钟。改为 120 秒、失败重试 2 次。
         limits = {'timeout': 120.0, 'max_retries': 2}
         if self.http_proxy and not local:
-            return OpenAI(http_client=httpx.Client(proxy=self.http_proxy), base_url=self.endpoint, api_key=key, **limits)
+            return OpenAI(http_client=httpx.Client(proxy=self.http_proxy), base_url=endpoint, api_key=key, **limits)
         if self.http_proxy and not getattr(self, '_proxy_note_shown', False):
             self._proxy_note_shown = True
             logger.info(f'{self.name}: 接口地址在本机，已忽略代理设置 {self.http_proxy}')
-        return OpenAI(base_url=self.endpoint, api_key=key, **limits)
+        return OpenAI(base_url=endpoint, api_key=key, **limits)
 
     def _explain_error(self, e: Exception) -> str:
         """Plain-language reason for a failed request, with the original message."""
@@ -1427,49 +1460,46 @@ class AI(Tiku):
             )
             return messages
 
-        # 判断题目类型
+        # 判断题目类型：单选 / 多选带选项，其余只发题目
+        if q_info['type'] in ("single", "multiple"):
+            text = f"题目：{q_info['title']}\n选项：{options}"
+        else:
+            text = f"题目：{q_info['title']}"
+        system = _build_llm_system_prompt(q_info['type'])
+
+        # 题目图片（api/images.py）：
+        #   direct     把图片直接发给答题模型
+        #   transcribe 先由识图模型把图片转成文字（LaTeX 公式、Markdown 表格），再交给答题模型
+        #   auto       先直接发；答题模型不接受图片时改为转成文字（默认）
+        #   off        不处理，图片只留一个 [图片] 标记
+        content, image_count = images.text_only(text), 0
+        model_key = (self.endpoint, self.model)
+        has_images = bool(images.image_urls(q_info))
+        if has_images and self.image_mode in ("direct", "auto") and model_key not in AI._vision_refused:
+            content, image_count = images.user_content(text, q_info)
+        elif has_images and (self.image_mode == "transcribe"
+                             or (self.image_mode == "auto" and model_key in AI._vision_refused)):
+            content = self._transcribed(text)
+
         self._wait_for_interval()
         self.last_request_time = time.time()
-        if q_info['type'] == "single":
+        try:
             completion = client.chat.completions.create(**self._completion_kwargs(
-                model=self.model,
-                messages=_make_messages(
-                    _build_llm_system_prompt(q_info['type']),
-                    f"题目：{q_info['title']}\n选项：{options}"
-                )
-            ))
-        elif q_info['type'] == 'multiple':
+                model=self.model, messages=_make_messages(system, content)))
+        except Exception as exc:
+            if not image_count or not _refuses_images(exc):
+                raise
+            # 模型不接受图片：这次运行里不再给它发图；“自动”时改为先转成文字，“直接识别”时只发文字
+            AI._vision_refused.add(model_key)
+            fallback = self._transcribed(text) if self.image_mode == "auto" else images.text_only(text)
+            logger.warning(f"模型 {self.model} 不接受图片，本次运行"
+                           + ("改为先把图片转成文字再作答" if self.image_mode == "auto" else "改为只发送文字（含图片的题目可能答不准）"))
+            self._wait_for_interval()
+            self.last_request_time = time.time()
             completion = client.chat.completions.create(**self._completion_kwargs(
-                model=self.model,
-                messages=_make_messages(
-                    _build_llm_system_prompt(q_info['type']),
-                    f"题目：{q_info['title']}\n选项：{options}"
-                )
-            ))
-        elif q_info['type'] == 'completion':
-            completion = client.chat.completions.create(**self._completion_kwargs(
-                model=self.model,
-                messages=_make_messages(
-                    _build_llm_system_prompt(q_info['type']),
-                    f"题目：{q_info['title']}"
-                )
-            ))
-        elif q_info['type'] == 'judgement':
-            completion = client.chat.completions.create(**self._completion_kwargs(
-                model=self.model,
-                messages=_make_messages(
-                    _build_llm_system_prompt(q_info['type']),
-                    f"题目：{q_info['title']}"
-                )
-            ))
-        else:
-            completion = client.chat.completions.create(**self._completion_kwargs(
-                model=self.model,
-                messages=_make_messages(
-                    _build_llm_system_prompt(q_info['type']),
-                    f"题目：{q_info['title']}"
-                )
-            ))
+                model=self.model, messages=_make_messages(system, fallback)))
+        if image_count:
+            logger.info(f"已把 {image_count} 张题目图片发给 {self.model} 看图作答")
 
         try:
             response = json.loads(remove_md_json_wrapper(completion.choices[0].message.content))
@@ -1479,10 +1509,20 @@ class AI(Tiku):
             logger.error("无法解析大模型输出内容")
             return None
 
+    # (endpoint, model) pairs that refused a request with images during this run
+    _vision_refused: set = set()
+
     def _init_tiku(self):
         self.endpoint = self._conf['endpoint']
         self.key = self._conf['key']
         self.model = self._conf['model']
+        # 题目图片：auto / direct / transcribe / off（设置 → 答题来源 → 题目图片）
+        mode = str(self._conf.get('image_mode', 'auto') or 'auto').strip().lower()
+        self.image_mode = mode if mode in ('auto', 'direct', 'transcribe', 'off') else 'auto'
+        # 识图模型（把图片转成文字用）；留空 = 用答题模型
+        self.vision_endpoint = str(self._conf.get('vision_endpoint', '') or '').strip()
+        self.vision_key = str(self._conf.get('vision_key', '') or '').strip()
+        self.vision_model = str(self._conf.get('vision_model', '') or '').strip()
         self.http_proxy = self._conf['http_proxy']
         self.min_interval_seconds = int(self._conf['min_interval_seconds'])
 
