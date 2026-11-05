@@ -70,6 +70,13 @@ def _install_log() -> None:
     sys.excepthook = excepthook
 
 
+def _quietly(fn, *args) -> None:
+    try:
+        fn(*args)
+    except Exception as exc:  # bookkeeping only: never disturb the app
+        qInfo(f"{fn.__name__} failed: {type(exc).__name__}: {exc}")
+
+
 def main() -> None:
     _install_log()
     os.environ["QT_WEBVIEW_PLUGIN"] = "native"
@@ -90,7 +97,10 @@ def main() -> None:
     if embedded_qml_dir.exists():
         engine.addImportPath(str(embedded_qml_dir))
 
-    if "--uninstall" in sys.argv:
+    from ui import winsetup
+
+    # 卸载学习通PLUS.exe in the install folder, or the older 学习通PLUS.exe --uninstall.
+    if "--uninstall" in sys.argv or winsetup.launched_as_uninstaller():
         from ui.uninstall import quiet_uninstall, run_uninstaller
 
         if "--quiet" in sys.argv:
@@ -108,6 +118,18 @@ def main() -> None:
         raise SystemExit(0)
     # Closing the window hides it to the tray; the app quits explicitly (tray menu / 退出).
     app.setQuitOnLastWindowClosed(False)
+
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        # An installed copy whose 应用和功能 entry went missing (or is from an older version)
+        # writes it again, so it can always be uninstalled from Windows settings too.
+        import threading
+
+        def repair() -> None:
+            from ui.controller import APP_VERSION   # imported off the UI thread, after the splash starts
+
+            winsetup.ensure_registered(Path(sys.executable).resolve().parent, APP_VERSION)
+
+        threading.Thread(target=lambda: _quietly(repair), name="ensure-registered", daemon=True).start()
 
     # Splash first; config, runtime checks and the main window load behind it.
     startup = StartupLoader(app, engine)

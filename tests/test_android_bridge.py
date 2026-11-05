@@ -94,6 +94,28 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(self.bridge.setup_problem(json.dumps(cloud)), "")
         self.assertIn("API Key", self.bridge.setup_problem(json.dumps({**cloud, "tiku.key": ""})))
         self.assertIn("账号", self.bridge.setup_problem(json.dumps({**cloud, "common.username": ""})))
+        # a saved 自定义服务商 counts as chosen; a local address never does on the phone
+        saved = json.dumps([{"name": "中转", "endpoint": "https://example.com/v1"},
+                            {"name": "本机", "endpoint": "http://127.0.0.1:8080/v1"}])
+        self.assertEqual(self.bridge.setup_problem(json.dumps({**custom, "tiku.custom_providers": saved})), "")
+        self.assertIn("服务商", self.bridge.setup_problem(json.dumps({**local, "tiku.custom_providers": saved})))
+
+    def test_custom_provider_add_remove_and_round_trip(self):
+        added = json.loads(self.bridge.add_custom_provider("", "我的中转", "https://relay.example.com/v1/"))
+        self.assertTrue(added["ok"], added)
+        self.assertEqual(added["endpoint"], "https://relay.example.com/v1")
+        for name, url in (("本机", "http://127.0.0.1:8080/v1"), ("明文", "http://relay2.example.com/v1"),
+                          ("重复", "https://relay.example.com/v1"), ("", "https://x.example.com/v1")):
+            self.assertFalse(json.loads(self.bridge.add_custom_provider(added["value"], name, url))["ok"], name)
+        values = json.loads(self.bridge.load_settings(self.config, self.template))
+        values.update({"tiku.custom_providers": added["value"], "tiku.endpoint": added["endpoint"]})
+        self.bridge.save_settings(self.config, self.template, json.dumps(values))
+        again = json.loads(self.bridge.load_settings(self.config, self.template))
+        self.assertEqual(json.loads(again["tiku.custom_providers"]), [{"name": "我的中转", "endpoint": "https://relay.example.com/v1"}])
+        self.assertEqual(self.bridge.remove_custom_provider(again["tiku.custom_providers"], "https://relay.example.com/v1"), "")
+        schema = json.loads(self.bridge.settings_schema())
+        self.assertNotIn("hidden", [f["type"] for g in schema["groups"] for f in g["fields"]])
+        self.assertEqual({r["id"] for r in schema["aiRegions"]}, {p["region"] for p in schema["aiProviders"]})
 
 
 class RunTest(unittest.TestCase):

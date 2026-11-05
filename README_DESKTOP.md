@@ -6,7 +6,7 @@
 
 - **安装包（推荐）**：运行 `XueXiTong-Plus-Setup-<版本>.exe`，按向导选择安装位置和快捷方式。默认安装到当前用户（`%LOCALAPPDATA%\Programs\学习通PLUS`），不需要管理员权限。已安装时再次运行会升级，配置不受影响。
 - **运行组件**：视频预览需要 Microsoft Edge WebView2 运行时（Windows 11 已自带）。安装程序会检查，缺少时可从微软官网下载并安装（只下载微软签名的官方安装程序）；失败不影响安装，之后可在 https://developer.microsoft.com/microsoft-edge/webview2/ 手动安装。
-- **卸载**：在 Windows“设置 → 应用”里卸载 学习通PLUS，或运行安装目录里的 `学习通PLUS.exe --uninstall`。默认清除账号数据（账号密码和 cookies），取消勾选可保留；也可以删除整个配置目录（含设置和日志）。
+- **卸载**：在 Windows“设置 → 应用”里卸载 学习通PLUS，或双击安装目录里的 `卸载学习通PLUS.exe`。默认清除账号数据（账号密码和 cookies），取消勾选可保留；也可以删除整个配置目录（含设置和日志）。
 - **免安装**：解压 `XueXiTong-Plus-Windows-<版本>.zip` 的全部内容，双击 `学习通PLUS.exe`。请保持同目录中的 `chaoxing-worker.exe` 和 `_internal` 文件夹完整。免安装版不会自动安装 WebView2 运行时。
 
 ## 使用

@@ -17,7 +17,7 @@ class AdvancedOptionsTest(unittest.TestCase):
     def test_fields_unique_and_typed(self):
         ids = [f["id"] for f in advanced.fields()]
         self.assertEqual(len(ids), len(set(ids)))
-        types = {"providers", "switch", "percent", "number", "choice", "text", "secret"}
+        types = {"providers", "switch", "percent", "number", "choice", "text", "secret", "hidden"}
         for f in advanced.fields():
             self.assertIn(f["type"], types, f["id"])
             if f["type"] == "number":

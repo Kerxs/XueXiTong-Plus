@@ -60,6 +60,9 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "assets\learning_plus.ico") -Dest
 Copy-Item -LiteralPath (Join-Path $projectRoot "assets\learning_plus.png") -Destination $releaseAssets -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot "assets\chaoxing_official.jpg") -Destination $releaseAssets -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot "LICENSE") -Destination (Join-Path $releaseDir "LICENSE.txt") -Force
+# The uninstaller in the install folder: a copy of the launcher (same _internal) that starts in
+# uninstall mode because of its name (ui\winsetup.UNINSTALL_EXE).
+Copy-Item -LiteralPath (Join-Path $releaseDir "学习通PLUS.exe") -Destination (Join-Path $releaseDir "卸载学习通PLUS.exe") -Force
 # Qt ships build leftovers (objects-*\*.obj) inside its qml folder. They are never loaded and
 # their deep paths can exceed MAX_PATH when installed, so drop them from the release.
 Get-ChildItem -LiteralPath (Join-Path $releaseDir "_internal") -Directory -Recurse -Filter "objects-*" -ErrorAction SilentlyContinue |

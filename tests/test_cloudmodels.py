@@ -32,6 +32,59 @@ def serve(key="sk-test", has_models=True):
     return server, f"http://127.0.0.1:{server.server_address[1]}/v1"
 
 
+class ProviderListTest(unittest.TestCase):
+    def test_every_provider_is_complete(self):
+        regions = {r["id"] for r in cloudmodels.REGIONS}
+        ids = [p["id"] for p in cloudmodels.PROVIDERS]
+        self.assertEqual(len(ids), len(set(ids)))
+        for p in cloudmodels.PROVIDERS:
+            self.assertIn(p["region"], regions, p)
+            self.assertTrue(p["endpoint"].startswith("https://") and not p["endpoint"].endswith("/"), p)
+            self.assertTrue(p["console"].startswith("https://"), p)
+            self.assertEqual(cloudmodels.console_url(p["endpoint"]), p["console"])
+        self.assertNotIn("hosts", cloudmodels.public_providers()[0])
+
+    def test_new_companies_are_recognised(self):
+        self.assertEqual(cloudmodels.identify("https://generativelanguage.googleapis.com/v1beta/openai/"), "Google Gemini")
+        self.assertEqual(cloudmodels.identify("https://api.x.ai/v1"), "xAI Grok")
+        self.assertEqual(cloudmodels.identify("https://api.minimax.chat/v1"), "MiniMax")
+
+
+class CustomProviderTest(unittest.TestCase):
+    def test_add_parse_remove(self):
+        saved = cloudmodels.dump_custom(cloudmodels.add_custom("", "公司网关", "https://llm.corp.example/v1/"))
+        self.assertEqual(cloudmodels.parse_custom(saved), [{"name": "公司网关", "endpoint": "https://llm.corp.example/v1"}])
+        self.assertEqual(cloudmodels.identify("https://llm.corp.example/v1", saved), "公司网关")
+        self.assertEqual(cloudmodels.identify("https://llm.corp.example/v1"), "")
+        self.assertTrue(cloudmodels.is_listed("https://llm.corp.example/v1/", saved))
+        self.assertTrue(cloudmodels.is_listed("https://api.deepseek.com/v1"))
+        self.assertFalse(cloudmodels.is_listed("https://other.example/v1", saved))
+        self.assertEqual(cloudmodels.dump_custom(cloudmodels.remove_custom(saved, "https://llm.corp.example/v1")), "")
+
+    def test_custom_name_wins_over_company(self):
+        saved = cloudmodels.dump_custom([{"name": "我的 DeepSeek", "endpoint": "https://api.deepseek.com/v1"}])
+        self.assertEqual(cloudmodels.identify("https://api.deepseek.com/v1", saved), "我的 DeepSeek")
+
+    def test_problems(self):
+        saved = cloudmodels.dump_custom([{"name": "A", "endpoint": "https://a.example/v1"}])
+        p = cloudmodels.custom_problem
+        self.assertEqual(p("B", "https://b.example/v1", saved), "")
+        self.assertIn("名称", p("", "https://b.example/v1", saved))
+        self.assertIn("http", p("B", "b.example/v1", saved))
+        self.assertIn("/chat/completions", p("B", "https://b.example/v1/chat/completions", saved))
+        self.assertIn("已经保存", p("B", "https://a.example/v1/", saved))
+        self.assertIn("同名", p("A", "https://c.example/v1", saved))
+        self.assertEqual(p("本机", "http://127.0.0.1:8080/v1", saved), "")             # desktop: fine
+        self.assertIn("本机", p("本机", "http://127.0.0.1:8080/v1", saved, cloud_only=True))
+        self.assertIn("https", p("B", "http://b.example/v1", saved, cloud_only=True))
+        full = [{"name": str(i), "endpoint": f"https://{i}.example/v1"} for i in range(cloudmodels.MAX_CUSTOM)]
+        self.assertIn("最多", p("x", "https://x.example/v1", full))
+
+    def test_damaged_value_is_ignored(self):
+        self.assertEqual(cloudmodels.parse_custom("{not json"), [])
+        self.assertEqual(cloudmodels.parse_custom('[{"name": "x", "endpoint": "ftp://x"}, 3, {"name": ""}]'), [])
+
+
 class CloudModelsTest(unittest.TestCase):
     def test_identify(self):
         self.assertEqual(cloudmodels.identify("https://api.deepseek.com/v1"), "DeepSeek")

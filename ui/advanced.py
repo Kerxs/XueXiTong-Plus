@@ -89,6 +89,7 @@ def _f(section, key, type_, label, default="", hint="", **extra) -> dict:
 
 
 # type: providers | switch | percent | number | choice | text | secret
+#       hidden (stored, no control of its own)
 #       display only: heading | localmodels | aiprovider | modelpicker
 GROUPS: list[dict] = [
     {
@@ -129,7 +130,9 @@ GROUPS: list[dict] = [
                show={"key": "tiku.provider", "has": ["TikuAdapter"]}),
             _f("tiku", "", "heading", "OpenAI 兼容接口", show={"key": "tiku.provider", "has": ["AI"]}),
             _f("tiku", "", "localmodels", "本机模型", show={"key": "tiku.provider", "has": ["AI"]}),
-            _f("tiku", "", "aiprovider", "常用服务", show={"key": "tiku.provider", "has": ["AI"]}),
+            _f("tiku", "", "aiprovider", "服务商", show={"key": "tiku.provider", "has": ["AI"]}),
+            # JSON list of {"name", "endpoint"} (ui/cloudmodels.py), edited by the 服务商 field
+            _f("tiku", "custom_providers", "hidden", "自定义服务商", ""),
             _f("tiku", "endpoint", "text", "接口地址", "", "通常要带 /v1，例如 https://api.example.com/v1",
                show={"key": "tiku.provider", "has": ["AI"]}),
             _f("tiku", "key", "secret", "API Key", "", "本机运行的模型服务（127.0.0.1 / localhost）可以留空",

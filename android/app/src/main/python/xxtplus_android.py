@@ -139,7 +139,7 @@ def _read_config(config_path: str, template_path: str) -> configparser.ConfigPar
 
 # The phone only uses the model companies' cloud APIs (ui/cloudmodels.PROVIDERS): no 本机模型
 # detection, no free-form endpoint and no proxy. The endpoint is set by picking a company.
-_DROP_TYPES = {"localmodels"}
+_DROP_TYPES = {"localmodels", "hidden"}   # hidden: stored only (自定义服务商, edited by aiprovider)
 _DROP_IDS = {"tiku.endpoint", "tiku.http_proxy"}
 _HINTS = {
     "tiku.key": "在所选服务商的控制台创建",
@@ -172,8 +172,8 @@ def settings_schema() -> str:
                 f = {**f, "show": [*show, {"key": "notification.provider", "ne": "Local"}]}
             fields.append(f)
         groups.append({**group, "fields": fields})
-    providers = [{"name": p["name"], "endpoint": p["endpoint"]} for p in cloudmodels.PROVIDERS]
-    return json.dumps({"basic": BASIC_FIELDS, "groups": groups, "aiProviders": providers},
+    return json.dumps({"basic": BASIC_FIELDS, "groups": groups, "aiProviders": cloudmodels.public_providers(),
+                       "aiRegions": cloudmodels.REGIONS},
                       ensure_ascii=False)
 
 
@@ -223,6 +223,24 @@ def guide_problem(values_json: str) -> str:
     from core import settings
 
     return settings.guide_problem(json.loads(values_json), cloud_only=True)
+
+
+def add_custom_provider(saved: str, name: str, endpoint: str) -> str:
+    """自定义服务商 on the phone: https only, no 本机 services. {"ok", "error", "value", "endpoint"}."""
+    from ui import cloudmodels
+
+    problem = cloudmodels.custom_problem(name, endpoint, saved, cloud_only=True)
+    if problem:
+        return json.dumps({"ok": False, "error": problem}, ensure_ascii=False)
+    value = cloudmodels.dump_custom(cloudmodels.add_custom(saved, name, endpoint))
+    return json.dumps({"ok": True, "value": value, "endpoint": cloudmodels.normalize_endpoint(endpoint)},
+                      ensure_ascii=False)
+
+
+def remove_custom_provider(saved: str, endpoint: str) -> str:
+    from ui import cloudmodels
+
+    return cloudmodels.dump_custom(cloudmodels.remove_custom(saved, endpoint))
 
 
 def list_models(endpoint: str, key: str, proxy: str) -> str:

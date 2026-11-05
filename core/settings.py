@@ -36,8 +36,9 @@ def _cloud_problem(values: dict) -> str:
     picked = [p.strip() for p in str(values.get("tiku.provider", "")).split(",")]
     if "AI" not in picked:
         return ""
-    endpoints = [p["endpoint"] for p in cloudmodels.PROVIDERS]
-    if str(values.get("tiku.endpoint", "")).strip() not in endpoints:
+    # A built-in company or one of the user's own 自定义服务商 (the phone has no free-form address).
+    endpoint = str(values.get("tiku.endpoint", ""))
+    if not cloudmodels.is_listed(endpoint, values.get(cloudmodels.CUSTOM_KEY, "")) or cloudmodels.is_local(endpoint):
         return CLOUD_PROVIDER_MISSING
     if not str(values.get("tiku.key", "")).strip():
         return AI_KEY_MISSING

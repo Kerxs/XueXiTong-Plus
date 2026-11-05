@@ -136,7 +136,7 @@ Card {
             Loader {
                 required property var modelData
                 Layout.fillWidth: true
-                active: adv.shown(modelData)
+                active: modelData.type !== "hidden" && adv.shown(modelData)
                 visible: active
                 property var field: modelData
                 sourceComponent: ({
@@ -276,58 +276,89 @@ Card {
         }
     }
 
-    // 常用服务: one click fills 接口地址; the provider is recognised from any address.
+    // 服务商: one row showing the service in use; clicking it opens 选择服务商 (二级菜单:
+    // 国内 / 海外 / 自定义 → the services), ProviderPickerDialog.qml.
     Component {
         id: aiProviderField
         ColumnLayout {
             id: ap
             readonly property var field: parent ? parent.field : ({})
-            readonly property string endpoint: adv.value("tiku.endpoint")
-            readonly property string company: controller.providerName(endpoint)
+            readonly property string endpoint: adv.value("tiku.endpoint").trim().replace(/\/+$/, "")
+            // customProviders is read so a newly saved / removed custom name is recognised at once.
+            readonly property string company: { controller.customProviders; return controller.providerName(ap.endpoint) }
+            readonly property string keyPage: controller.providerConsole(endpoint)
             spacing: 6
-            Text { text: "常用服务"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 13 }
-            Flow {
+
+            Text { text: "服务商"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 13 }
+            Rectangle {
                 Layout.fillWidth: true
-                spacing: 6
-                Repeater {
-                    model: controller.aiProviders
-                    Rectangle {
-                        id: pchip
-                        required property var modelData
-                        readonly property bool on: ap.endpoint.replace(/\/+$/, "") === modelData.endpoint
-                        width: pname.implicitWidth + 22
-                        height: 30
-                        radius: 15
-                        color: on ? Theme.accentSoft : (phover.hovered ? Theme.surfaceAlt : Theme.surface)
-                        border.color: on ? Theme.accent : (phover.hovered ? Theme.borderStrong : Theme.border)
-                        Behavior on color { ColorAnimation { duration: Theme.fast } }
-                        HoverHandler { id: phover; cursorShape: Qt.PointingHandCursor }
-                        ToolTip.visible: phover.hovered
-                        ToolTip.delay: 500
-                        ToolTip.text: modelData.endpoint
-                        TapHandler { onTapped: controller.useProvider(pchip.modelData.endpoint) }
+                implicitHeight: 56
+                radius: Theme.radius
+                color: rowHover.hovered ? Theme.surfaceAlt : Theme.surface
+                border.color: rowHover.hovered ? Theme.borderStrong : Theme.border
+                Behavior on color { ColorAnimation { duration: Theme.fast } }
+                HoverHandler { id: rowHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: picker.openFor(ap.endpoint) }
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 14
+                    anchors.rightMargin: 12
+                    spacing: 12
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
                         Text {
-                            id: pname
-                            anchors.centerIn: parent
-                            text: pchip.modelData.name
-                            color: pchip.on ? Theme.accent : Theme.text
+                            Layout.fillWidth: true
+                            text: ap.endpoint === "" ? "未选择" : (ap.company !== "" ? ap.company : "未识别的服务")
+                            color: ap.company !== "" ? Theme.text : Theme.muted
                             font.family: Theme.uiFont
-                            font.pixelSize: 12
-                            font.weight: pchip.on ? Font.DemiBold : Font.Normal
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
                         }
+                        Text {
+                            Layout.fillWidth: true
+                            text: ap.endpoint === "" ? "国内、海外常用服务，或你自己的服务" : ap.endpoint
+                            color: Theme.muted
+                            font.family: Theme.uiFont
+                            font.pixelSize: 11
+                            elide: Text.ElideMiddle
+                        }
+                    }
+                    Text {
+                        visible: ap.keyPage !== ""
+                        text: "获取 API Key ↗"
+                        color: keyLinkHover.hovered ? Theme.accentHover : Theme.accent
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                        font.underline: keyLinkHover.hovered
+                        HoverHandler { id: keyLinkHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: controller.openUrl(ap.keyPage) }
+                    }
+                    Text {
+                        text: "更换"
+                        color: Theme.muted
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                    }
+                    Text {
+                        text: ""
+                        color: Theme.faint
+                        font.family: Theme.iconFont
+                        font.pixelSize: 12
                     }
                 }
             }
             Text {
-                visible: ap.endpoint.trim() !== ""
+                visible: ap.endpoint !== "" && ap.company === ""
                 Layout.fillWidth: true
-                text: ap.company !== "" ? "识别为：" + ap.company
-                    : "未识别的服务：只要兼容 OpenAI 接口即可使用"
-                color: ap.company !== "" ? Theme.accent : Theme.muted
+                text: "只要兼容 OpenAI 接口即可使用；也可以在“自定义服务”里给它起个名字保存。"
+                color: Theme.muted
                 font.family: Theme.uiFont
                 font.pixelSize: 12
                 wrapMode: Text.Wrap
             }
+            ProviderPickerDialog { id: picker }
         }
     }
 

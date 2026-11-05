@@ -45,7 +45,7 @@ from ui.output_parser import (
 
 APP_NAME = "学习通PLUS"          # identity — do not change
 DISPLAY_NAME = "学习通 PLUS"     # shown to users
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 # Bump whenever the 开始引导 changes: everyone who finished an older guide sees it again.
 # 1: 欢迎 / 免责声明 / 账号 / 开始使用   2: + 答题设置 (1.1.7)
 # 3: 答题设置 -> 高级设置, showing 答题来源 / 答题 / 通知推送 together (1.1.9)
@@ -350,15 +350,42 @@ class AppController(QObject):
         self.localModelsChanged.emit()
 
     # ----- 云端模型：常用服务、识别公司、获取模型列表 ------------------------
-    aiProviders = Property("QVariantList", lambda self: [{"id": p["id"], "name": p["name"], "endpoint": p["endpoint"]}
-                                                       for p in cloudmodels.PROVIDERS], constant=True)
+    aiProviders = Property("QVariantList", lambda self: cloudmodels.public_providers(), constant=True)
+    aiRegions = Property("QVariantList", lambda self: cloudmodels.REGIONS, constant=True)
+    # 自定义服务商: saved with the other settings (保存), like every field of 高级选项.
+    customProviders = Property("QVariantList", lambda self: cloudmodels.parse_custom(
+        self._advanced.get(cloudmodels.CUSTOM_KEY, "")), notify=configChanged)
     cloudModels = Property("QVariantList", lambda self: self._cloud_models, notify=cloudModelsChanged)
     cloudModelState = Property(str, lambda self: self._cloud_state, notify=cloudModelsChanged)
     cloudModelError = Property(str, lambda self: self._cloud_error, notify=cloudModelsChanged)
 
     @Slot(str, result=str)
     def providerName(self, endpoint: str) -> str:
-        return cloudmodels.identify(endpoint)
+        return cloudmodels.identify(endpoint, self._advanced.get(cloudmodels.CUSTOM_KEY, ""))
+
+    @Slot(str, result=str)
+    def providerConsole(self, endpoint: str) -> str:
+        return cloudmodels.console_url(endpoint)
+
+    @Slot(str, str, result=str)
+    def customProviderProblem(self, name: str, endpoint: str) -> str:
+        return cloudmodels.custom_problem(name, endpoint, self._advanced.get(cloudmodels.CUSTOM_KEY, ""))
+
+    @Slot(str, str, result=str)
+    def addCustomProvider(self, name: str, endpoint: str) -> str:
+        """Save a custom provider and switch to it. Returns why it could not be saved ("" = saved)."""
+        saved = self._advanced.get(cloudmodels.CUSTOM_KEY, "")
+        problem = cloudmodels.custom_problem(name, endpoint, saved)
+        if problem:
+            return problem
+        self.setAdvanced(cloudmodels.CUSTOM_KEY, cloudmodels.dump_custom(cloudmodels.add_custom(saved, name, endpoint)))
+        self.setAdvanced("tiku.endpoint", cloudmodels.normalize_endpoint(endpoint))
+        return ""
+
+    @Slot(str)
+    def removeCustomProvider(self, endpoint: str) -> None:
+        saved = self._advanced.get(cloudmodels.CUSTOM_KEY, "")
+        self.setAdvanced(cloudmodels.CUSTOM_KEY, cloudmodels.dump_custom(cloudmodels.remove_custom(saved, endpoint)))
 
     @Slot(str)
     def useProvider(self, endpoint: str) -> None:

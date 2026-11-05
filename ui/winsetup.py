@@ -17,6 +17,10 @@ APP_NAME = "学习通PLUS"          # identity: install folder, shortcut files, 
 DISPLAY_NAME = "学习通 PLUS"     # what users see (window titles, Apps & features, …)
 APP_EXE = "学习通PLUS.exe"
 WORKER_EXE = "chaoxing-worker.exe"
+# The uninstaller in the install folder, like other Windows programs have. It is a copy of
+# APP_EXE (same PyInstaller launcher, same _internal) that starts in uninstall mode because of
+# its name; ``学习通PLUS.exe --uninstall`` keeps working.
+UNINSTALL_EXE = "卸载学习通PLUS.exe"
 PUBLISHER = "学习通PLUS"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\XueXiTongPlus"
 # Written into every install folder; the uninstaller refuses to delete a folder without it.
@@ -120,10 +124,63 @@ def read_installed() -> dict | None:
     return {"version": str(version), "location": str(location)}
 
 
+def launched_as_uninstaller(executable: str | None = None) -> bool:
+    """True when this process is the uninstaller copy (卸载学习通PLUS.exe)."""
+    name = Path(executable or sys.executable).name.lower()
+    return name == UNINSTALL_EXE.lower()
+
+
+def uninstall_commands(install_dir: Path) -> tuple[str, str]:
+    """(UninstallString, QuietUninstallString): the uninstaller in the folder, else the app exe."""
+    uninstaller = install_dir / UNINSTALL_EXE
+    if uninstaller.exists():
+        return f"\"{uninstaller}\"", f"\"{uninstaller}\" --quiet"
+    exe = install_dir / APP_EXE
+    return f"\"{exe}\" --uninstall", f"\"{exe}\" --uninstall --quiet"
+
+
+def folder_size(folder: Path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(folder):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
+
+
+def ensure_registered(install_dir: Path, version: str) -> bool:
+    """Write the 应用和功能 entry again if an installed copy lost it (or it points elsewhere / is old).
+
+    Only for folders the installer created (MARKER). Returns True when the entry was written.
+    """
+    if sys.platform != "win32" or not (install_dir / MARKER).exists():
+        return False
+    info = read_installed()
+    current = uninstall_commands(install_dir)[0]
+    same_place = info and os.path.normcase(os.path.normpath(info["location"])) == os.path.normcase(os.path.normpath(install_dir))
+    if same_place and info["version"] == version and _uninstall_string() == current:
+        return False
+    register(install_dir, version, folder_size(install_dir))
+    return True
+
+
+def _uninstall_string() -> str:
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY) as key:
+            return str(winreg.QueryValueEx(key, "UninstallString")[0])
+    except OSError:
+        return ""
+
+
 def register(install_dir: Path, version: str, size_bytes: int) -> None:
     import winreg
 
     exe = install_dir / APP_EXE
+    uninstall, quiet = uninstall_commands(install_dir)
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY, 0, winreg.KEY_WRITE) as key:
         values = {
             "DisplayName": DISPLAY_NAME,
@@ -131,8 +188,8 @@ def register(install_dir: Path, version: str, size_bytes: int) -> None:
             "Publisher": PUBLISHER,
             "DisplayIcon": f"\"{exe}\",0",
             "InstallLocation": str(install_dir),
-            "UninstallString": f"\"{exe}\" --uninstall",
-            "QuietUninstallString": f"\"{exe}\" --uninstall --quiet",
+            "UninstallString": uninstall,
+            "QuietUninstallString": quiet,
             "Comments": "基于开源项目 Samueli924/chaoxing，遵循 GPL-3.0 协议",
         }
         for name, value in values.items():
