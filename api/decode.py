@@ -297,11 +297,21 @@ def _card_title(card: Dict[str, Any]) -> str:
     return str(prop.get("title") or prop.get("name") or card.get("name") or "").strip()
 
 
+def _content_kind(card: Dict[str, Any], card_type: str) -> str:
+    """The most telling name for a card: its type, else the player module / resource type."""
+    prop = card.get("property", {}) or {}
+    for value in (card_type, prop.get("module"), prop.get("type"), prop.get("resourceType"), card.get("module")):
+        value = str(value or "").strip().lower()
+        if value and value not in ("other", "attachment", "insertinfo"):
+            return value
+    return card_type
+
+
 def _process_other_task(card: Dict[str, Any], card_type: str) -> Dict[str, Any]:
     """A task point this program does not do (survey, discussion, link …): reported for manual completion."""
     return {
         "type": "other",
-        "card_type": card_type,
+        "card_type": _content_kind(card, card_type),
         "jobid": card.get("jobid", str(card.get("id", ""))),
         "name": _card_title(card),
         "otherinfo": card.get("otherInfo", ""),
@@ -449,7 +459,9 @@ def decode_questions_info(html_content: str) -> Dict[str, Any]:
 
     # 处理所有问题
     questions = []
-    for div_tag in soup.find("form").find_all("div", class_="singleQuesId"):
+    form = soup.find("form")
+    # No form at all (closed / submitted / error page): no questions, the caller decides what it means
+    for div_tag in (form.find_all("div", class_="singleQuesId") if form else []):
         question = _process_question(div_tag, font_decoder)
         if question:
             questions.append(question)

@@ -54,9 +54,17 @@ class _QuietServer(ThreadingHTTPServer):
 
 
 class VideoProxy:
-    def __init__(self, allowed_hosts: tuple[str, ...] = ("chaoxing.com", "cldisk.com"), referer: str = REFERER) -> None:
+    # Statuses that mean the video server will not serve this address any more (expired / gone):
+    # the app then asks the task for a fresh one.
+    REFUSED = (401, 403, 404, 410)
+
+    def __init__(self, allowed_hosts: tuple[str, ...] = ("chaoxing.com", "cldisk.com"), referer: str = REFERER,
+                 on_problem=None) -> None:
         self.allowed_hosts = allowed_hosts
         self.referer = referer
+        # on_problem(url, status): called from the proxy thread when the video server refuses the
+        # address (status in REFUSED) or cannot be reached twice in a row (status 502).
+        self.on_problem = on_problem
         self._urls: OrderedDict[str, str] = OrderedDict()
         self._pages: OrderedDict[str, bytes] = OrderedDict()
         self._lock = threading.Lock()
@@ -128,6 +136,13 @@ class VideoProxy:
         with self._lock:
             return self._urls.get(path[3:].split("?", 1)[0])
 
+    def _report(self, url: str, status: int) -> None:
+        if self.on_problem is not None:
+            try:
+                self.on_problem(url, status)
+            except Exception:  # noqa: BLE001 - a report must never break serving
+                pass
+
     # ------------------------------------------------------------ forwarding
     def _serve(self, handler: BaseHTTPRequestHandler, head: bool) -> None:
         if handler.path.startswith("/p/"):
@@ -144,6 +159,16 @@ class VideoProxy:
             if not head:
                 handler.wfile.write(page)
             return
+        if handler.path.startswith("/f/"):
+            # The preview page failed several times in a row: let the app fetch a fresh address.
+            with self._lock:
+                failed = self._urls.get(handler.path[3:].split("?", 1)[0])
+            if failed is not None:
+                self._report(failed, 0)
+            handler.send_response(204)
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+            return
         target = self._lookup(handler.path)
         if target is None:
             handler.send_error(404)
@@ -152,12 +177,21 @@ class VideoProxy:
         for name in PASS_REQUEST:
             if handler.headers.get(name):
                 headers[name] = handler.headers[name]
-        request = urllib.request.Request(target, headers=headers, method="HEAD" if head else "GET")
-        try:
-            upstream = urllib.request.urlopen(request, timeout=20)  # noqa: S310 - allow-listed chaoxing URL
-        except urllib.error.HTTPError as exc:
-            upstream = exc               # forward the CDN's status (e.g. 403 / 416)
-        except (urllib.error.URLError, TimeoutError, OSError):
+        upstream = None
+        for attempt in range(2):         # a dropped / slow connection is tried once more
+            request = urllib.request.Request(target, headers=headers, method="HEAD" if head else "GET")
+            try:
+                upstream = urllib.request.urlopen(request, timeout=20)  # noqa: S310 - allow-listed chaoxing URL
+                break
+            except urllib.error.HTTPError as exc:
+                upstream = exc           # forward the CDN's status (e.g. 403 / 416)
+                if exc.code in self.REFUSED:
+                    self._report(target, exc.code)
+                break
+            except (urllib.error.URLError, TimeoutError, OSError):
+                upstream = None
+        if upstream is None:
+            self._report(target, 502)
             handler.send_error(502)
             return
         with upstream:

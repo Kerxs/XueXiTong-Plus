@@ -313,6 +313,13 @@ def run(config_path: str, data_dir: str, pause_file: str, sink) -> int:
     os.chdir(data_dir)
     os.environ["CHAOXING_DESKTOP_PREVIEW"] = "1"
     os.environ["CHAOXING_PAUSE_FILE"] = pause_file
+    # The video preview asks for a fresh address by creating this file (PreviewPlayer, api/base.py).
+    refresh = os.path.join(data_dir, "preview_refresh.flag")
+    try:
+        os.remove(refresh)
+    except OSError:
+        pass
+    os.environ["CHAOXING_PREVIEW_REFRESH_FILE"] = refresh
     os.environ["PYTHONUNBUFFERED"] = "1"
 
     stream = _ParsedStream(OutputParser(), sink)

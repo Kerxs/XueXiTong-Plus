@@ -342,7 +342,12 @@ def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, spe
     # 测验任务
     elif job["type"] == "workid":
         logger.trace(f"识别到章节检测任务, 任务章节: {course['title']}")
-        return chaoxing.study_work(course, job, job_info)
+        result = chaoxing.study_work(course, job, job_info)
+        if result == StudyResult.NEEDS_USER:
+            # 没有题目 / 已截止：提醒用户去看一下，不算失败，不重试（以前会一直重试直到停止运行）
+            manual.report(course, point or {}, {**job, "card_type": f"workid-{job.get('work_problem', 'empty')}"})
+            return StudyResult.SUCCESS
+        return result
     # 阅读任务
     elif job["type"] == "read":
         logger.trace(f"识别到阅读任务, 任务章节: {course['title']}")

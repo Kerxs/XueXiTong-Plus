@@ -31,7 +31,13 @@ class StudyVideoWatchesToTheEndTest(unittest.TestCase):
         cx.video_progress_log = progress
         cx._close_pbar_safe = lambda pbar: None
         job = {"name": "1.1 视频", "jobid": "j", "rt": rt, "otherinfo": "", "playTime": start * 1000}
-        with mock.patch("api.base.time.time", fake_time), mock.patch("api.base.time.sleep", fake_sleep), \
+        # A private fake clock for api.base only: patching time.time / time.sleep themselves would let
+        # background threads left by other tests (sleeping in the same process) move this clock.
+        import time as real_time
+        from types import SimpleNamespace
+        fake_clock = SimpleNamespace(**{k: getattr(real_time, k) for k in dir(real_time) if not k.startswith("_")})
+        fake_clock.time, fake_clock.sleep = fake_time, fake_sleep
+        with mock.patch("api.base.time", fake_clock), \
                 mock.patch("api.base.random.uniform", lambda a, b: 85), \
                 mock.patch("api.base.pause.wait_if_paused", lambda: 0.0), \
                 mock.patch("api.base.tqdm"):

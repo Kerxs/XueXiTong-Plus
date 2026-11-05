@@ -26,8 +26,15 @@ class PreviewPlayer(ctx: Context) : TextureView(ctx), TextureView.SurfaceTexture
         private const val TAG = "PreviewPlayer"
     }
 
-    /** "loading" | "playing" | "error" */
+    /** "loading" | "playing" | "retrying" | "error" */
     var onState: (String) -> Unit = {}
+    /** Called after 3 failures in a row: the address may have expired (the app asks for a new one). */
+    var onGiveUp: () -> Unit = {}
+
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var failures = 0
+    private var position = 0.0
+    private val retry = Runnable { reopen() }
 
     private var player: MediaPlayer? = null
     private var prepared = false
@@ -44,14 +51,34 @@ class PreviewPlayer(ctx: Context) : TextureView(ctx), TextureView.SurfaceTexture
 
     /** Show this video, starting at `at` seconds. The same address again is ignored. */
     fun show(url: String, at: Double) {
+        if (at >= 0) position = at
         if (url == source) return
         source = url
+        failures = 0
+        handler.removeCallbacks(retry)
         startAt = at.coerceAtLeast(0.0)
         open()
     }
 
+    /** Try the same address again from where the task is (after an error). */
+    private fun reopen() {
+        startAt = position
+        open()
+    }
+
+    private fun failed() {
+        failures++
+        if (failures == 3) onGiveUp()
+        // 2, 4, 8, 16, 30, 30 ... seconds: it never gives up while the video is on screen
+        val waitMs = minOf(30_000L, 2_000L shl minOf(failures - 1, 4))
+        onState(if (failures >= 3) "error" else "retrying")
+        handler.removeCallbacks(retry)
+        handler.postDelayed(retry, waitMs)
+    }
+
     /** Follow the task: keep within 3 s of its position, pause while the task is paused. */
     fun sync(position: Double, paused: Boolean) {
+        if (position >= 0) this.position = position
         val mp = player ?: return
         if (!prepared) return
         runCatching {
@@ -65,6 +92,7 @@ class PreviewPlayer(ctx: Context) : TextureView(ctx), TextureView.SurfaceTexture
     }
 
     fun release() {
+        handler.removeCallbacks(retry)
         prepared = false
         player?.let { mp -> runCatching { mp.reset(); mp.release() } }
         player = null
@@ -84,6 +112,7 @@ class PreviewPlayer(ctx: Context) : TextureView(ctx), TextureView.SurfaceTexture
             mp.setOnPreparedListener {
                 if (player !== it) return@setOnPreparedListener
                 prepared = true
+                failures = 0
                 it.setVolume(0f, 0f)
                 if (startAt > 0) it.seekTo((startAt * 1000).toInt())
                 it.start()
@@ -93,14 +122,14 @@ class PreviewPlayer(ctx: Context) : TextureView(ctx), TextureView.SurfaceTexture
             mp.setOnErrorListener { it, what, extra ->
                 if (player === it) {
                     Log.w(TAG, "playback error $what/$extra")
-                    onState("error")
+                    failed()
                 }
                 true
             }
             mp.prepareAsync()
         } catch (e: Exception) {
             Log.w(TAG, "cannot open the video: ${e.javaClass.simpleName}")
-            onState("error")
+            failed()
         }
     }
 

@@ -273,6 +273,16 @@ private fun allowedVideo(source: String): Boolean {
         listOf("chaoxing.com", "cldisk.com").any { host == it || host.endsWith(".$it") }
 }
 
+private var lastPreviewRefresh = 0L
+
+/** The preview failed 3 times: ask the task to read the video status again (fresh address). */
+private fun requestFreshPreview(ctx: android.content.Context) {
+    val now = System.currentTimeMillis()
+    if (now - lastPreviewRefresh < 90_000) return
+    lastPreviewRefresh = now
+    runCatching { java.io.File(PythonBridge.dataDir(ctx), "preview_refresh.flag").writeText("refresh") }
+}
+
 @Composable
 private fun VideoPane() {
     val c = X.colors
@@ -296,13 +306,20 @@ private fun VideoPane() {
             contentAlignment = Alignment.Center) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
-                factory = { ctx -> PreviewPlayer(ctx).also { p -> p.onState = { state = it }; player = p } },
+                factory = { ctx ->
+                    PreviewPlayer(ctx).also { p ->
+                        p.onState = { state = it }
+                        p.onGiveUp = { requestFreshPreview(ctx) }
+                        player = p
+                    }
+                },
                 update = { view -> view.show(source, RunState.videoPosition()) },
                 onRelease = { view -> if (player === view) player = null; view.release() },
             )
             when (state) {
                 "loading" -> Text("正在加载视频…", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
-                "error" -> Text("视频加载失败（不影响任务运行）", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+                "retrying" -> Text("视频加载失败，正在重试…", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+                "error" -> Text("视频暂时无法加载，正在重试（不影响任务运行）", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
             }
         }
         Text("与任务进度同步，1 倍速播放。", color = c.faint, fontSize = 12.sp)

@@ -185,12 +185,31 @@ class StudyResult(Enum):
     FORBIDDEN = 1  # 403
     ERROR = 2
     TIMEOUT = 3
+    NEEDS_USER = 4   # cannot be done automatically (e.g. a quiz page without questions): reported, not retried
 
     def is_success(self):
         return self == StudyResult.SUCCESS
 
     def is_failure(self):
-        return self != StudyResult.SUCCESS
+        return self not in (StudyResult.SUCCESS, StudyResult.NEEDS_USER)
+
+
+# Quiz page without questions (api/work answered 200): what the page says instead.
+WORK_SUBMITTED_MARKS = ("待批阅", "已批阅", "已提交", "已完成", "本次成绩", "最终成绩", "查看作答记录")
+WORK_CLOSED_MARKS = ("已截止", "已过期", "截止时间已过", "作答时间已结束", "不在作答时间", "未开始", "未到开始时间",
+                     "不允许作答", "已关闭")
+
+
+def classify_empty_work_page(status: int, text: str) -> str:
+    """A 章节检测 page that has no questions: "submitted", "closed", "empty", or "" (a real error)."""
+    if status != 200:
+        return ""
+    text = text or ""
+    if any(mark in text for mark in WORK_SUBMITTED_MARKS):
+        return "submitted"
+    if any(mark in text for mark in WORK_CLOSED_MARKS):
+        return "closed"
+    return "empty"
 
 
 class SignType(IntEnum):
@@ -489,7 +508,8 @@ class Chaoxing:
         }
         logger.trace("正在尝试登录...")
         try:
-            resp = _session.post(_url, headers=gc.HEADERS, data=_data)
+            # (connect, read) like the shared session: a stalled login must not wait forever
+            resp = _session.post(_url, headers=gc.HEADERS, data=_data, timeout=(10, 20))
         finally:
             _session.close()      # only its cookies are needed (save_cookies below)
         if resp and resp.json()["status"] == True:
@@ -699,9 +719,8 @@ class Chaoxing:
             cards_params.update({"num": _possible_num})
             _resp = _session.get("https://mooc1.chaoxing.com/mooc-ans/knowledge/cards", params=cards_params)
             if _resp.status_code != 200:
-                logger.error(f"未知错误: {_resp.status_code} 正在跳过")
-                logger.error(_resp.text)
-                return [], {}
+                # Not "this chapter has no task points": the chapter would count as done unchecked.
+                raise RuntimeError(f"读取章节任务点失败（HTTP {_resp.status_code}）")
 
             _job_list, _job_info = decode_course_card(_resp.text)
             if _job_info.get("notOpen", False):
@@ -713,6 +732,8 @@ class Chaoxing:
             job_info.update(_job_info)
 
         if not job_list:
+            # 只有文字、图片等内容、没有任务点的章节：访问一次页面即可
+            logger.info(f"章节没有需要完成的任务点（只有文字等内容）: {point.get('title', '')}")
             self.study_emptypage(course, point)
 
         logger.trace(f"原始任务点列表内容:\n{_resp.text}")
@@ -914,6 +935,41 @@ class Chaoxing:
         logger.warning("视频进度响应的 isPassed 值无效 (jobid={}): {!r}", job.get("jobid"), value)
         return False, 0
 
+    @staticmethod
+    def _emit_video_preview(video_info: dict, job: dict) -> None:
+        """Tell the app which video to preview (__CX_VIDEO_PREVIEW__); only when it asked for previews."""
+        if os.environ.get("CHAOXING_DESKTOP_PREVIEW") != "1":
+            return
+        source = ""
+        for source_key in ("httpshd", "httphd", "https", "http", "url", "mp4"):
+            candidate = video_info.get(source_key)
+            if not isinstance(candidate, str):
+                continue
+            try:
+                parsed = urlsplit(candidate)
+            except ValueError:
+                continue
+            # The video CDN is on cldisk.com (e.g. s2.cldisk.com), not chaoxing.com.
+            host = (parsed.hostname or "").lower()
+            if parsed.scheme in {"http", "https"} and host.endswith((".chaoxing.com", ".cldisk.com")):
+                source = candidate
+                break
+        preview_event = {"source": source, "title": job.get("name", "学习通视频")}
+        print("__CX_VIDEO_PREVIEW__" + json.dumps(preview_event, ensure_ascii=False), flush=True)
+
+    @staticmethod
+    def _preview_refresh_requested() -> bool:
+        """The app asks for a fresh preview address (the video server refused the old one) by
+        creating CHAOXING_PREVIEW_REFRESH_FILE. Consumed here: one request, one refresh."""
+        flag = os.environ.get("CHAOXING_PREVIEW_REFRESH_FILE", "")
+        if not flag:
+            return False
+        try:
+            os.remove(flag)
+        except OSError:
+            return False
+        return True
+
     def _refresh_video_status(self, session: requests.Session, job: dict, _type: Literal["Video", "Audio"]) \
             -> Optional[dict]:
         self.rate_limiter.limit_rate(random_time=True, random_max=0.2)
@@ -977,26 +1033,7 @@ class Chaoxing:
             logger.error("无法读取视频状态，任务跳过: {}", _job.get("name", _job.get("jobid", "未知任务")))
             return StudyResult.ERROR
 
-        if os.environ.get("CHAOXING_DESKTOP_PREVIEW") == "1":
-            source = ""
-            for source_key in ("httpshd", "httphd", "https", "http", "url", "mp4"):
-                candidate = _video_info.get(source_key)
-                if not isinstance(candidate, str):
-                    continue
-                try:
-                    parsed = urlsplit(candidate)
-                except ValueError:
-                    continue
-                # The video CDN is on cldisk.com (e.g. s2.cldisk.com), not chaoxing.com.
-                host = (parsed.hostname or "").lower()
-                if parsed.scheme in {"http", "https"} and host.endswith((".chaoxing.com", ".cldisk.com")):
-                    source = candidate
-                    break
-            preview_event = {
-                "source": source,
-                "title": _job.get("name", "学习通视频"),
-            }
-            print("__CX_VIDEO_PREVIEW__" + json.dumps(preview_event, ensure_ascii=False), flush=True)
+        self._emit_video_preview(_video_info, _job)
 
         _dtoken = _video_info.get("dtoken")
         try:
@@ -1125,6 +1162,12 @@ class Chaoxing:
                 # 桌面版暂停时在这里等待；暂停的时间不算观看时长，继续后进度不会跳一大截
                 last_iter += pause.wait_if_paused()
 
+                # 视频预览的地址被视频服务器拒绝（过期）时，界面请求一次新地址：重新读取视频状态后再发一次
+                if self._preview_refresh_requested():
+                    fresh = self._refresh_video_status(_session, _job, _type)
+                    if fresh:
+                        self._emit_video_preview(fresh, _job)
+
                 # Uploading the progress takes time, we assume that the video is still playing in the background, this manually calculates the time elapsed
                 dt = (time.time() - last_iter) * _speed
                 last_iter = time.time()
@@ -1195,6 +1238,8 @@ class Chaoxing:
         def is_not_permission_error(exception):
             return not isinstance(exception, PermissionError)
 
+        last_page = {}    # the last quiz page, to tell an empty / closed / submitted quiz from an error
+
         @retry(
             stop=stop_after_attempt(3),
             wait=wait_fixed(1),
@@ -1227,6 +1272,7 @@ class Chaoxing:
             if '教师未创建完成该测验' in _resp.text:
                 raise PermissionError("教师未创建完成该测验")
 
+            last_page["status"], last_page["text"] = _resp.status_code, _resp.text
             questions = decode_questions_info(_resp.text)
 
             if _resp.status_code == 200 and questions.get("questions"):
@@ -1267,8 +1313,19 @@ class Chaoxing:
                 if attempt > 0:
                     logger.error(f"重做轮无法获取题目(上一轮提交成绩 {last_submitted_score} 分), "
                                  f"该课程可能仅允许作答一次: {e}")
-                else:
-                    logger.error(f"获取章节检测题目失败, 达到最大重试次数: {e}")
+                    return StudyResult.ERROR
+                # The page loaded but has no questions: retrying would never help (and used to stop
+                # the whole run after the re-login). Decide from what the page says instead.
+                kind = classify_empty_work_page(last_page.get("status", 0), last_page.get("text", ""))
+                if kind == "submitted":
+                    logger.info("章节检测已经提交过（待批阅 / 已批阅），跳过: {}", _job.get("name") or _job.get("jobid"))
+                    return StudyResult.SUCCESS
+                if kind in ("closed", "empty"):
+                    why = "已截止或未到作答时间" if kind == "closed" else "页面上没有读到题目"
+                    logger.warning(f"章节检测无法自动作答（{why}），请到学习通确认: {_job.get('name') or _job.get('jobid')}")
+                    _job["work_problem"] = kind
+                    return StudyResult.NEEDS_USER
+                logger.error(f"获取章节检测题目失败, 达到最大重试次数: {e}")
                 return StudyResult.ERROR
 
             _ORIGIN_HTML_CONTENT = final_resp.text  # 用于配合输出网页源码, 帮助修复#391错误

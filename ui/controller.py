@@ -28,6 +28,7 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 from core import secret
 from ui import advanced, cloudmodels, localmodels
 from ui.models import LogModel, TaskModel
+from ui.videoproxy import VideoProxy as _VideoProxyForCodes
 from ui.output_parser import (
     ActivityEvent,
     CourseListEvent,
@@ -53,7 +54,7 @@ RESTART_DELAY_MS = 10_000
 RESTART_RESET_SECONDS = 30 * 60
 HANG_SECONDS = 20 * 60
 EXIT_STOPPED = 2
-APP_VERSION = "1.2.6"
+APP_VERSION = "1.2.7"
 # Bump whenever the 开始引导 changes: everyone who finished an older guide sees it again.
 # 1: 欢迎 / 免责声明 / 账号 / 开始使用   2: + 答题设置 (1.1.7)
 # 3: 答题设置 -> 高级设置, showing 答题来源 / 答题 / 通知推送 together (1.1.9)
@@ -68,6 +69,10 @@ else:
 CONFIG_PATH = DATA_DIR / "config.ini"
 # 暂停标记：存在时任务进程在安全位置等待（api/pause.py）
 PAUSE_FILE = DATA_DIR / "pause.flag"
+# The app asks the task for a fresh preview address by creating this file (api/base.py
+# Chaoxing._preview_refresh_requested); at most once per PREVIEW_REFRESH_SECONDS.
+PREVIEW_REFRESH_FILE = DATA_DIR / "preview_refresh.flag"
+PREVIEW_REFRESH_SECONDS = 90
 
 SPEED_OPTIONS = ["1", "1.25", "1.5", "1.75", "2"]
 VIDEO_BASE_URL = "https://mooc1.chaoxing.com/ananas/modules/video/index.html?v=2025-0725-1842"
@@ -122,26 +127,46 @@ def video_message_html(message: str, sub: str = "运行学习通视频任务后�
 
 
 def video_source_html(source: str) -> str:
+    """Muted, read-only preview page. It does not give up on an error: it retries with growing
+    waits (2, 4, 8, 16, 30 s ...), reopens at the task's position, reloads after a long stall, and
+    after 3 failures in a row tells the proxy (/f/...) so the app fetches a fresh video address."""
     safe_source = html.escape(source, quote=True)
     return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="unsafe-url">
         <style>html,body{{width:100%;height:100%;margin:0;background:#05080f;overflow:hidden}}
         body{{pointer-events:none;user-select:none}}
         video{{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#05080f;pointer-events:none}}
+        #note{{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:#8e9bb3;font:14px "Segoe UI","Microsoft YaHei UI",sans-serif}}
         </style></head><body><video id="preview" autoplay muted playsinline disablepictureinpicture
         disableremoteplayback controlslist="nodownload noplaybackrate nofullscreen">
-        <source src="{safe_source}"></video><script>
+        <source id="src" src="{safe_source}"></video><div id="note"></div><script>
         const player=document.getElementById('preview'); player.muted=true;
+        const source=document.getElementById('src'); const base=source.getAttribute('src');
+        const note=document.getElementById('note');
         // #t=<seconds>&r=<rate>: open at the task's position and play at its speed; cxSync(t)
         // (called from the app as the task advances) pulls the picture back if it drifts.
         const hash=new URLSearchParams(location.hash.slice(1));
         const rate=Math.min(4,Math.max(0.5,parseFloat(hash.get('r'))||1));
+        let wanted=parseFloat(hash.get('t')); let paused=false; let tries=0; let timer=null; let lastMove=Date.now();
+        const show=t=>{{note.textContent=t||'';note.style.display=t?'flex':'none';}};
         const seekTo=t=>{{if(!(t>=0)||!isFinite(player.duration))return;player.currentTime=Math.min(t,Math.max(0,player.duration-0.5));}};
-        player.addEventListener('loadedmetadata',()=>{{player.playbackRate=rate;seekTo(parseFloat(hash.get('t')));}},{{once:true}});
-        window.cxSync=t=>{{if(player.readyState>=1&&Math.abs(player.currentTime-t)>4)seekTo(t);}};
-        window.cxPause=p=>{{if(p)player.pause();else player.play().catch(()=>{{}});}};
-        player.addEventListener('canplay',()=>player.play().catch(()=>{{}}),{{once:true}});
-        player.addEventListener('loadeddata',()=>player.play().catch(()=>{{}}),{{once:true}});
-        player.addEventListener('error',()=>{{document.body.innerHTML='<div style="color:#8e9bb3;font:14px Segoe UI;display:flex;height:100%;align-items:center;justify-content:center">视频加载失败</div>'}},true);
+        const play=()=>{{if(!paused)player.play().catch(()=>{{}});}};
+        player.addEventListener('loadedmetadata',()=>{{player.playbackRate=rate;seekTo(wanted);}});
+        player.addEventListener('canplay',play); player.addEventListener('loadeddata',play);
+        player.addEventListener('playing',()=>{{tries=0;show('');lastMove=Date.now();}});
+        player.addEventListener('timeupdate',()=>{{lastMove=Date.now();}});
+        window.cxSync=t=>{{wanted=t;if(player.readyState>=1&&Math.abs(player.currentTime-t)>4)seekTo(t);}};
+        window.cxPause=p=>{{paused=!!p;if(p)player.pause();else play();}};
+        function retry(){{
+          if(timer)return;
+          tries++;
+          const wait=Math.min(30,2*Math.pow(2,Math.min(tries-1,4)));
+          show(tries>=3?'视频暂时无法加载，正在重试…':'视频加载失败，正在重试…');
+          if(tries===3)fetch(base.replace('/v/','/f/')).catch(()=>{{}});
+          timer=setTimeout(()=>{{timer=null;source.src=base+'?n='+tries+'-'+Date.now();player.load();}},wait*1000);
+        }}
+        player.addEventListener('error',retry,true);
+        // Stuck without progress (network stall, half-open connection): load it again.
+        setInterval(()=>{{if(!paused&&!timer&&Date.now()-lastMove>25000&&player.readyState<3)retry();}},5000);
         document.addEventListener('contextmenu',e=>e.preventDefault());
         document.addEventListener('keydown',e=>{{e.preventDefault();e.stopPropagation();}},true);
         </script></body></html>"""
@@ -208,6 +233,7 @@ class AppController(QObject):
     _localModelsFound = Signal(list)   # emitted from the detection thread
     cloudModelsChanged = Signal()
     _cloudModelsFound = Signal(list, str)   # (models, error) from the fetch thread
+    _previewProblem = Signal(str, int)      # (video address, status) from the video proxy thread
     dirtyChanged = Signal()
     runStateChanged = Signal()
     dashboardChanged = Signal()
@@ -284,7 +310,11 @@ class AppController(QObject):
         self._course_process = None
         self._known_courses = self._load_known_courses()
 
-        self._video_proxy = VideoProxy()
+        self._video_source = ""          # the 学习通 address of the previewed video
+        self._preview_refreshed_at = 0.0
+        self._preview_noted: set[tuple[str, int]] = set()
+        self._previewProblem.connect(self._on_preview_problem)
+        self._video_proxy = VideoProxy(on_problem=lambda url, status: self._previewProblem.emit(url, status))
 
     updater = Property(QObject, lambda self: self._updater, constant=True)
 
@@ -903,6 +933,8 @@ class AppController(QObject):
         environment.insert("CHAOXING_DESKTOP_PREVIEW", "1")
         self._clear_pause_flag()
         environment.insert("CHAOXING_PAUSE_FILE", str(PAUSE_FILE))
+        PREVIEW_REFRESH_FILE.unlink(missing_ok=True)
+        environment.insert("CHAOXING_PREVIEW_REFRESH_FILE", str(PREVIEW_REFRESH_FILE))
         process.setProcessEnvironment(environment)
         process.start(str(program), arguments)
         if not process.waitForStarted(2500):
@@ -1028,6 +1060,9 @@ class AppController(QObject):
                 except ValueError:
                     self._set_video(video_message_html("视频地址不是学习通域名，已忽略"), event.title, False, "视频地址不是学习通域名，已忽略")
                 else:
+                    if event.source != self._video_source:
+                        self._preview_noted.clear()
+                    self._video_source = event.source
                     page = self._video_proxy.register_page(video_source_html(local))
                     self._set_video(video_source_html(local), event.title, True, "", page)
             else:
@@ -1097,6 +1132,7 @@ class AppController(QObject):
         self._set_paused(False)
         self._clock.stop()
         self._watchdog.stop()
+        PREVIEW_REFRESH_FILE.unlink(missing_ok=True)
         from ui import keepawake
 
         keepawake.release()
@@ -1163,6 +1199,31 @@ class AppController(QObject):
     def _on_error(self, error) -> None:
         if self._process and error != QProcess.ProcessError.Crashed:
             self._log("ERROR", f"任务进程错误：{self._process.errorString()}")
+
+    def _on_preview_problem(self, url: str, status: int) -> None:
+        """The video proxy could not get the previewed video. Refused / broken: ask the task for a
+        fresh address (it re-reads the video status once); the preview page retries by itself."""
+        if self._process is None or url != self._video_source:
+            return                       # an older video, or nothing running
+        refused = status in _VideoProxyForCodes.REFUSED or status == 0
+        key = (url, status)
+        if key not in self._preview_noted:
+            self._preview_noted.add(key)
+            if status == 502:
+                self._log("WARNING", "视频预览：暂时连不上视频服务器，会自动重试（不影响任务运行）。")
+            elif status == 0:
+                self._log("WARNING", "视频预览：视频多次加载失败，正在重新获取视频地址（不影响任务运行）。")
+            else:
+                self._log("WARNING", f"视频预览：视频服务器拒绝了当前地址（HTTP {status}，可能已过期），"
+                                     "正在重新获取（不影响任务运行）。")
+        if not refused or time.monotonic() - self._preview_refreshed_at < PREVIEW_REFRESH_SECONDS:
+            return
+        self._preview_refreshed_at = time.monotonic()
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            PREVIEW_REFRESH_FILE.write_text("refresh", encoding="utf-8")
+        except OSError:
+            pass
 
     # ----- visual panel --------------------------------------------------
     def _set_video(self, markup: str, title: str, active: bool, message: str = "", page_url: str = "") -> None:

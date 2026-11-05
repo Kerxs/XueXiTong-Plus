@@ -487,6 +487,13 @@ class Tiku(ABC):
             dummy = DummyTiku(config_path=path)
             return dummy
 
+        # 桌面版 / 手机版没有可以输入答案的终端：手动输入题库会让任务一直等待输入，跳过它
+        if os.environ.get("CHAOXING_DESKTOP_PREVIEW") == "1" and "TikuManual" in providers:
+            logger.warning("应用里不能手动输入答案，已跳过“手动输入题库”（命令行版本才可用）")
+            providers = [name for name in providers if name != "TikuManual"]
+            if not providers:
+                return DummyTiku(config_path=path)
+
         invalid_providers = [name for name in providers if name not in PROVIDER_REGISTRY]
         if invalid_providers:
             logger.error(f"题库provider配置无效: {', '.join(invalid_providers)}")

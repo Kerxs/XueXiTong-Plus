@@ -48,6 +48,9 @@ class TaskService : Service() {
         private const val HISTORY = 400
         // A run the system killed is started again (START_STICKY) at most this many times.
         private const val MAX_RESTARTS = 5
+        // No output at all for this long while running (not paused, not waiting for the user):
+        // the task is stuck; end this process so START_STICKY starts the run again.
+        private const val HANG_MS = 20 * 60 * 1000L
 
         /** Present while a run is active; left behind when the system kills the :worker process. */
         fun runFile(ctx: Context) = java.io.File(ctx.filesDir, "run.json")
@@ -185,6 +188,10 @@ class TaskService : Service() {
                 .apply { setReferenceCounted(false); acquire() }
         }.getOrNull()
         watchNetwork()
+        lastEventAt = System.currentTimeMillis()
+        waitingInput = false
+        main.removeCallbacks(hangCheck)
+        main.postDelayed(hangCheck, 60_000)
         record(stateJson(true))
         val sink = Sink()
         worker = Thread({
@@ -213,8 +220,28 @@ class TaskService : Service() {
         }
     }
 
+    private var lastEventAt = 0L
+    private var waitingInput = false
+
+    private val hangCheck = object : Runnable {
+        override fun run() {
+            if (worker == null) return
+            val silent = System.currentTimeMillis() - lastEventAt
+            if (!paused && !waitingInput && silent > HANG_MS) {
+                record(JSONObject().put("type", "log").put("level", "WARNING")
+                    .put("message", "任务已经 ${silent / 60000} 分钟没有任何输出，可能卡住了，正在重新开始…")
+                    .put("time", "").toString())
+                // run.json stays: the system restarts this service and the run continues.
+                main.postDelayed({ Process.killProcess(Process.myPid()) }, 500)
+                return
+            }
+            main.postDelayed(this, 60_000)
+        }
+    }
+
     private fun onEvent(json: String) {
         record(json)
+        lastEventAt = System.currentTimeMillis()
         val event = runCatching { JSONObject(json) }.getOrNull() ?: return
         when (event.optString("type")) {
             "activity" -> when (event.optString("kind")) {
@@ -222,8 +249,8 @@ class TaskService : Service() {
                 "chapter" -> chapter = event.optString("value")
             }
             "progress" -> progress = "${event.optString("name")}  ${event.optInt("percent")}%"
-            "prompt" -> alert("需要你确认", event.optString("text"))
-            "courselist" -> alert("请选择要学习的课程", "打开学习通 PLUS 选择课程后继续")
+            "prompt" -> { waitingInput = true; alert("需要你确认", event.optString("text")) }
+            "courselist" -> { waitingInput = true; alert("请选择要学习的课程", "打开学习通 PLUS 选择课程后继续") }
             "notify" -> pushNotification(event.optString("text"))
         }
         val now = System.currentTimeMillis()
@@ -254,6 +281,8 @@ class TaskService : Service() {
 
     private fun answer(text: String) {
         if (worker == null) return
+        waitingInput = false
+        lastEventAt = System.currentTimeMillis()
         PythonBridge.module(this).callAttr("answer", text)
         getSystemService(NotificationManager::class.java).cancel(NOTIFY_ALERT)
     }
@@ -263,7 +292,7 @@ class TaskService : Service() {
         val flag = PythonBridge.pauseFile(this)
         if (value == paused) return
         if (value) flag.writeText("paused") else flag.delete()
-        if (value) activeMs = activeNow() else resumedAt = System.currentTimeMillis()
+        if (value) activeMs = activeNow() else { resumedAt = System.currentTimeMillis(); lastEventAt = resumedAt }
         paused = value
         // The wake lock is kept while paused: a paused run is resumed from the notification
         // and should continue at once; it is released on stop / end.
@@ -274,6 +303,7 @@ class TaskService : Service() {
     private fun finish(stopped: Boolean, code: Int) {
         PythonBridge.pauseFile(this).delete()
         runFile(this).delete()     // ended on purpose: nothing to restart
+        main.removeCallbacks(hangCheck)
         val was = worker != null
         worker = null
         releaseLocks()
