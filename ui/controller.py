@@ -54,7 +54,7 @@ RESTART_DELAY_MS = 10_000
 RESTART_RESET_SECONDS = 30 * 60
 HANG_SECONDS = 20 * 60
 EXIT_STOPPED = 2
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 # Bump whenever the 开始引导 changes: everyone who finished an older guide sees it again.
 # 1: 欢迎 / 免责声明 / 账号 / 开始使用   2: + 答题设置 (1.1.7)
 # 3: 答题设置 -> 高级设置, showing 答题来源 / 答题 / 通知推送 together (1.1.9)
