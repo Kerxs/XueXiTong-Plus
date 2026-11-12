@@ -42,12 +42,13 @@ Rectangle {
             width: 8; height: 8; radius: 4
             color: pill.fg
             Behavior on color { ColorAnimation { duration: Theme.normal } }
-            SequentialAnimation on opacity {
-                running: pill.kind === "running" && Theme.loopMotion
-                loops: Animation.Infinite
-                NumberAnimation { to: 0.25; duration: 700 }
-                NumberAnimation { to: 1; duration: 700 }
-                onRunningChanged: if (!running) parent.opacity = 1
+            id: dot
+            Pulse {
+                target: dot
+                from: 1.0
+                to: 0.25
+                period: 1400
+                active: pill.kind === "running" && Theme.loopMotion
             }
         }
         Text {

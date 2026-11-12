@@ -129,13 +129,31 @@ fun SettingsScreen(snackbar: SnackbarHostState, reopenGuide: () -> Unit) {
     }
     BackHandler(enabled = page.isNotEmpty()) { leave() }
 
+    // Settings save themselves a moment after the last change — nothing to press. (The effect
+    // restarts on every change, so typing in a field is one save, not one per letter.)
+    var first by remember { mutableStateOf(true) }
+    LaunchedEffect(values.toMap()) {
+        if (first) { first = false; return@LaunchedEffect }
+        kotlinx.coroutines.delay(600)
+        SettingsModel.save(ctx)
+    }
+
     PageSwitch(page, { if (it.isEmpty()) 0 else 1 }) { current ->
         if (current.isEmpty()) {
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(Dimens.pad),
                 verticalArrangement = Arrangement.spacedBy(Dimens.gap)) {
-                PageHeader("设置", "账号、答题、推送、界面和数据")
-                XCard(Modifier.fillMaxWidth(), padding = 6.dp) {
-                    sections.forEachIndexed { i, s -> MenuRow(s, divider = i < sections.size - 1) { page = s.id } }
+                PageHeader("设置", "修改后自动保存")
+                // heading → entries → the entry's page (which may open a further one, e.g. 选择服务商)
+                listOf("账号与运行" to listOf("account", "run"), "任务" to listOf("auto", "tiku", "answer", "notify"),
+                    "应用" to listOf("ui", "data", "update", "about")).forEach { (heading, ids) ->
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(heading, Modifier.padding(start = 6.dp), color = X.colors.accent, fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold)
+                        XCard(Modifier.fillMaxWidth(), padding = 6.dp) {
+                            val rows = sections.filter { it.id in ids }
+                            rows.forEachIndexed { i, s -> MenuRow(s, divider = i < rows.size - 1) { page = s.id } }
+                        }
+                    }
                 }
                 if (RunState.running) {
                     Text("正在运行的任务使用开始时的设置，修改在下次开始时生效。", color = X.colors.muted, fontSize = 12.sp)
@@ -312,10 +330,14 @@ private fun DataPage(snackbar: SnackbarHostState) {
     var feedbackText by remember { mutableStateOf("") }
     var feedbackUrl by remember { mutableStateOf("") }
     XCard(Modifier.fillMaxWidth(), title = "匿名使用统计",
-        subtitle = "只记录各类任务的成功 / 失败次数和错误类型，不含账号、课程、题目和日志；保存在手机上，默认关闭") {
-        SwitchRow("记录匿名统计", "关闭时什么都不记录", SettingsModel.values["common.telemetry"] == "true") {
+        subtitle = "只统计数字（各类任务成功 / 失败次数和耗时、错误类型、内存、版本），不含账号、课程、题目和日志；默认开启") {
+        SwitchRow("发送匿名统计", "关闭后立即停止，并删除本机还没发送的数据", SettingsModel.values["common.telemetry"] != "false") {
             SettingsModel.values["common.telemetry"] = if (it) "true" else "false"
-            scope.launch { SettingsModel.save(ctx) }
+            scope.launch {
+                SettingsModel.save(ctx)
+                // off: what was recorded and what was waiting to be sent is deleted at once
+                if (!it) withContext(Dispatchers.IO) { runCatching { PythonBridge.clearStats(ctx) } }
+            }
         }
         XButton("预览并反馈", {
             scope.launch {

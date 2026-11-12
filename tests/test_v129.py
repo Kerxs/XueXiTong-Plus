@@ -127,7 +127,7 @@ class TelemetryTest(unittest.TestCase):
             telemetry.save()
         data = json.loads((self.dir / telemetry.STATS_FILE).read_text(encoding="utf-8"))
         self.assertEqual(data["counts"], {"video.ok": 6, "captcha.restart": 2, "runs": 2})
-        self.assertEqual(set(data), {"version", "platform", "since", "updated", "counts"})
+        self.assertEqual(set(data), {"id", "version", "platform", "since", "updated", "counts"})
 
     def test_feedback_text_and_link(self):
         telemetry.configure(True, self.dir)

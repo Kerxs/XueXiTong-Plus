@@ -136,6 +136,8 @@ class ControllerRefreshTest(unittest.TestCase):
         self.ctl._log = lambda level, message, *a: self.logs.append((level, message))
         self.ctl._process = mock.Mock()
         self.ctl._video_source = "https://s1.cldisk.com/a.mp4"
+        self.ctl._videos["a.mp4"] = {"title": "a.mp4", "html": "", "page": "", "pos": -1.0,
+                                     "sources": ["https://s1.cldisk.com/a.mp4"]}
 
     def tearDown(self):
         self.ctl._process = None

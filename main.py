@@ -305,11 +305,14 @@ def init_chaoxing(common_config, tiku_config, config_path=None):
 AUTOMATED_JOB_TYPES = ("video", "workid")
 # 课件 / 文档 (设置 → 自动完成): opened once so 学习通 records them; main() sets it from the config.
 AUTO_DOCUMENTS = True
+# 直播 (设置 → 自动完成): the watch time is reported minute by minute for the stream's length.
+AUTO_LIVE = True
 
 
 def _automated(job: dict) -> bool:
     kind = job.get("type")
-    return kind in AUTOMATED_JOB_TYPES or (kind == "document" and AUTO_DOCUMENTS)
+    return (kind in AUTOMATED_JOB_TYPES or (kind == "document" and AUTO_DOCUMENTS)
+            or (kind == "live" and AUTO_LIVE))
 
 
 def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, speed: float,
@@ -342,6 +345,8 @@ def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, spe
             logger.warning(
                 f"出现异常任务 -> 任务章节: {course['title']} 任务ID: {job['jobid']}, 已跳过"
             )
+        else:
+            manual.resolve(course, job.get("name", ""))     # a "needs a captcha" reminder is taken back
         return video_result
     # 文档任务
     elif job["type"] == "document":
@@ -370,36 +375,55 @@ def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, spe
     # 直播任务
     elif job["type"] == "live":
         logger.trace(f"识别到直播任务, 任务章节: {course['title']} 任务ID: {job['jobid']}")
+        from api.live_process import LiveResult
+
+        name = job.get("name") or "直播"
+        outcome = "任务未完成"
+        live = None
         try:
-            # 准备直播所需参数
-            defaults = {
-                "userid": chaoxing.get_uid(),
-                "clazzId": course.get("clazzId"),
-                "knowledgeid": job_info.get("knowledgeid")
-            }
-
-            # 创建直播对象
-            live = Live(
-                attachment=job,
-                defaults=defaults,
-                course_id=course.get("courseId")
-            )
-
-            # 启动直播处理线程
-            thread = threading.Thread(
-                target=LiveProcessor.run_live,
-                args=(live, speed),
-                daemon=True
-            )
-            thread.start()
-            thread.join()  # 等待直播处理完成
+            live = Live(attachment=job, course_id=course.get("courseId"), defaults={
+                "userid": chaoxing.get_uid(), "clazzId": course.get("clazzId"),
+                "knowledgeid": job_info.get("knowledgeid")})
+            result = LiveProcessor.run_live(live, passed=lambda: chaoxing._card_passed(course, job))
+            if result == LiveResult.DONE:
+                outcome = "任务完成" if live_confirmed(chaoxing, course, job, live) else "任务待确认"
+                return StudyResult.SUCCESS
+            # not started yet / ended without a replay / reports refused: the user has to look
+            manual.report(course, point or {}, job)
             return StudyResult.SUCCESS
         except Exception as e:
-            logger.error(f"处理直播任务时出错: {str(e)}")
+            logger.error(f"处理直播任务时出错: {type(e).__name__}: {e}")
             return StudyResult.ERROR
+        finally:
+            # the progress row opened by "开始任务" is closed, however the stream ended
+            if getattr(live, "started", False):
+                logger.info("{}: {}", outcome, name)
 
     logger.error(f"未知任务类型: {job['type']}")
     return StudyResult.ERROR
+
+
+LIVE_CONFIRM_WAITS = (0, 5, 10)      # seconds before each look at the task point after a live stream
+
+
+def live_confirmed(chaoxing, course, job, live, sleep=time.sleep) -> bool:
+    """Whether a live stream that was watched to its length counts as finished. 学习通 showing the
+    task point as passed settles it. When the task point cannot be read or found on the page, the
+    watch time decides: finished when every report was accepted. Only a task point that is there
+    and still not passed after a few looks is left as 待确认."""
+    state = None
+    for wait in LIVE_CONFIRM_WAITS:
+        if wait:
+            sleep(wait)
+        state = chaoxing._card_state(course, job)
+        if state is not False:
+            break
+    if state is True:
+        return True
+    if state is None and getattr(live, "all_accepted", False):
+        logger.info("直播观看时长已全部提交: {}", job.get("name") or "直播")
+        return True
+    return False
 
 
 # 验证码过不去时：等多久再重新登录、每次运行最多重新开始几次（之后提醒用户手动处理这个视频）
@@ -447,10 +471,95 @@ class JobProcessor:
         self._relogin_lock = threading.Lock()
         self._last_relogin = 0.0
         self._captcha_restarts = 0
+        self._captcha_lock = threading.Lock()
+        # Chapters 学习通 has not opened yet (闯关: the next one opens when the one before is finished) wait
+        # here instead of being handed to a worker that can only find them closed. Per course:
+        # the waiting chapters in order, and how many of its chapters are queued or being worked on.
+        self._sched_lock = threading.RLock()
+        self._held: dict[str, list[ChapterTask]] = {}
+        self._active: dict[str, int] = {}
+
+    @staticmethod
+    def _course_key(task: ChapterTask) -> str:
+        return f"{task.course.get('courseId', '')}/{task.course.get('clazzId', '')}"
+
+    def _enqueue(self, task: ChapterTask) -> None:
+        self._active[self._course_key(task)] = self._active.get(self._course_key(task), 0) + 1
+        self.task_queue.put(task)
+
+    def _release(self, key: str) -> None:
+        """Nothing of this course is in progress any more: read its chapter list again and queue the
+        chapters that have opened. If none shows as open, the next one is tried anyway (the list does
+        not mark every closed chapter); 学习通's answer for it decides about the rest."""
+        with self._sched_lock:
+            held = self._held.get(key) or []
+            if not held or self._active.get(key, 0) > 0 or self.stop_reason:
+                return
+            try:
+                course = held[0].course
+                points = self.chaoxing.get_course_point(course["courseId"], course["clazzId"], course["cpi"])["points"]
+                fresh = {pt.get("id"): pt for pt in points}
+            except Exception as e:
+                logger.debug(f"重新读取章节列表失败，按原来的章节信息继续: {type(e).__name__}: {e}")
+                fresh = {}
+            for task in held:
+                if task.point.get("id") in fresh:
+                    task.point = fresh[task.point.get("id")]
+            ready = [t for t in held if not t.point.get("need_unlock")] or held[:1]
+            for task in ready:
+                held.remove(task)
+                self._enqueue(task)
+
+    def _hold(self, task: ChapterTask) -> None:
+        """Not open yet while earlier chapters of the course are still being worked on: wait for them."""
+        with self._sched_lock:
+            key = self._course_key(task)
+            self._held.setdefault(key, []).append(task)
+            self._held[key].sort()
+            self._active[key] = max(0, self._active.get(key, 0) - 1)
+        self.task_queue.task_done()
+
+    def _others_active(self, task: ChapterTask) -> bool:
+        with self._sched_lock:
+            return self._active.get(self._course_key(task), 0) > 1
+
+    def _drop_locked(self, task: ChapterTask) -> None:
+        """This chapter stayed closed with nothing before it left to do: the chapters after it that are
+        still locked cannot open in this run. One line for all of them instead of five tries each."""
+        with self._sched_lock:
+            held = self._held.get(self._course_key(task)) or []
+            locked = [t for t in held if t.point.get("need_unlock")]
+            if not locked:
+                return
+            for t in locked:
+                held.remove(t)
+        logger.warning("{}：「{}」未开放，后面还有 {} 个章节要等它完成后才开放，本次不再逐个尝试",
+                       task.course["title"], task.point["title"], len(locked))
+
+    def _done(self, task: ChapterTask) -> None:
+        """The chapter is finished for this run (done, skipped or given up). Chapters that were waiting
+        for it are queued BEFORE the queue's count goes down, so the run does not end early."""
+        with self._sched_lock:
+            key = self._course_key(task)
+            self._active[key] = max(0, self._active.get(key, 0) - 1)
+            self._release(key)
+        self.task_queue.task_done()
 
     def run(self):
-        for task in self.tasks:
-            self.task_queue.put(task)
+        with self._sched_lock:
+            waiting = 0
+            for task in sorted(self.tasks):
+                if task.point.get("need_unlock") and not task.point.get("has_finished"):
+                    self._held.setdefault(self._course_key(task), []).append(task)
+                    waiting += 1
+                else:
+                    self._enqueue(task)
+            for key in list(self._held):
+                self._release(key)          # a course with nothing open: try its first chapter
+        if waiting:
+            todo = sum(1 for t in self.tasks if not t.point.get("has_finished")) - waiting
+            logger.info("同时进行最多 {} 个章节：{} 门课程，{} 个未完成章节已开放，{} 个章节等前面的完成后才开放",
+                        self.worker_num, len({self._course_key(t) for t in self.tasks}), max(0, todo), waiting)
 
         for i in range(self.worker_num):
             thread = threading.Thread(target=self.worker_thread, daemon=True)
@@ -478,16 +587,70 @@ class JobProcessor:
             if time.time() - self._last_relogin < (20 if force else 60):
                 return ""           # another chapter just did it
             logger.warning("多次重试失败，正在重新登录学习通…")
-            try:
-                state = self.chaoxing.login(login_with_cookies=str_to_bool(self.config.get("use_cookies", False)))
-            except Exception as e:
-                return f"重新登录时出错：{type(e).__name__}: {e}"
+            state = None
+            for attempt in range(3):
+                try:
+                    state = self.chaoxing.login(login_with_cookies=str_to_bool(self.config.get("use_cookies", False)))
+                    break
+                except Exception as e:
+                    # A dropped connection is not a failed login: wait for the network and try again
+                    # (the run used to stop here: "重新登录时出错：ConnectionError").
+                    if net.is_network_error(e) and attempt < 2:
+                        logger.warning("重新登录时网络出错，等网络恢复后再试: {}", type(e).__name__)
+                        net.wait_for_network()
+                        time.sleep(3)
+                        continue
+                    return f"重新登录时出错：{type(e).__name__}: {e}"
             if not state.get("status"):
                 return f"重新登录失败：{state.get('msg') or '原因未知'}"
             self._last_relogin = time.time()
             telemetry.count("relogin")
             logger.info("已重新登录")
             return ""
+
+    MANUAL_RELOGIN_EVERY = 600      # seconds: logging in again to confirm a reminder, at most this often
+    _manual_relogin_at = 0.0
+
+    def _manual_left(self, task: ChapterTask, waiting: dict) -> tuple[dict, dict, dict]:
+        """Read the chapter again: reminders whose task point 学习通 no longer lists as unfinished are
+        taken back. Returns (what is still there, its fresh jobs by key) and the chapter's job info."""
+        jobs, info = self.chaoxing.get_job_list(task.course, task.point)
+        if info.get("notOpen"):
+            return waiting, {}, info
+        fresh = {str(j.get("jobid")): j for j in jobs}
+        left, found = {}, {}
+        for key, entry in waiting.items():
+            job = fresh.get(str(entry["job"].get("jobid")))
+            if job is None:
+                manual.dismiss(key)
+            else:
+                left[key], found[key] = entry, job
+        return left, found, info
+
+    def _settle_manual(self, task: ChapterTask) -> None:
+        """The chapter's "可能需要手动" reminders are looked at again before they become popups: the
+        chapter is reloaded; when they are still there, log in again (not more often than every ten
+        minutes) and reload; what the program can do itself is tried once more. Only what is left
+        after that is announced (api/manual.confirm)."""
+        waiting = manual.pending(task.course, task.point)
+        if not waiting:
+            return
+        try:
+            waiting, found, info = self._manual_left(task, waiting)
+            if waiting and time.time() - self._manual_relogin_at >= self.MANUAL_RELOGIN_EVERY:
+                self._manual_relogin_at = time.time()
+                logger.info("仍有 {} 项内容没有完成，重新登录后再确认一次", len(waiting))
+                if not self._relogin(force=True):
+                    waiting, found, info = self._manual_left(task, waiting)
+            again = [key for key in waiting if key in found and _automated(found[key])]
+            if again:
+                for key in again:
+                    process_job(self.chaoxing, task.course, found[key], info, self.speed, task.point)
+                waiting, found, info = self._manual_left(task, waiting)
+        except Exception as e:  # noqa: BLE001 - confirming must never fail the chapter
+            logger.debug("确认手动内容时出错: {}: {}", type(e).__name__, e)
+        for key in waiting:
+            manual.confirm(key)
 
     def _refresh_point(self, task: ChapterTask) -> None:
         """Read the course's chapter list again after logging in, and use the fresh entry for this chapter."""
@@ -516,17 +679,19 @@ class JobProcessor:
     def _captcha_restart(self, task: ChapterTask, exc: CaptchaBlocked) -> None:
         """A captcha that could not be passed: wait, log in again and start the chapter over
         (not counted as a try). After MAX_CAPTCHA_RESTARTS in a run the video is left for the user."""
-        self._captcha_restarts += 1
+        with self._captcha_lock:
+            self._captcha_restarts += 1
+            restarts = self._captcha_restarts
         telemetry.count("captcha.restart")
         name = f"{task.course['title']} - {task.point['title']}"
-        if self._captcha_restarts > MAX_CAPTCHA_RESTARTS:
+        if restarts > MAX_CAPTCHA_RESTARTS:
             logger.warning(f"本次运行已因验证码重新开始 {MAX_CAPTCHA_RESTARTS} 次，跳过「{exc.job_name}」，请到学习通打开播放一下")
             manual.report(task.course, task.point, {"type": "other", "card_type": "captcha",
-                                                     "jobid": exc.job_name, "name": exc.job_name})
-            self.task_queue.task_done()
+                                                     "jobid": exc.job_name, "name": exc.job_name}, urgent=True)
+            self._done(task)
             return
         logger.warning(f"遇到验证码且无法通过，{CAPTCHA_COOLDOWN} 秒后重新登录并重新开始本章: {name}"
-                       f"（第 {self._captcha_restarts}/{MAX_CAPTCHA_RESTARTS} 次）")
+                       f"（第 {restarts}/{MAX_CAPTCHA_RESTARTS} 次）")
         waited = 0
         while waited < CAPTCHA_COOLDOWN and not self.stop_reason:
             pause.wait_if_paused()
@@ -536,7 +701,7 @@ class JobProcessor:
         if problem:
             self.failed_tasks.append(task)
             self._stop(task, problem)
-            self.task_queue.task_done()
+            self._done(task)
             return
         self.retry_queue.put(task)
 
@@ -545,13 +710,13 @@ class JobProcessor:
         if task.relogged:
             self.failed_tasks.append(task)
             self._stop(task, "")
-            self.task_queue.task_done()
+            self._done(task)
             return
         problem = self._relogin()
         if problem:
             self.failed_tasks.append(task)
             self._stop(task, problem)
-            self.task_queue.task_done()
+            self._done(task)
             return
         self._refresh_point(task)
         task.relogged = True
@@ -568,7 +733,7 @@ class JobProcessor:
                 logger.info("Queue shut down")
                 return
             if self.stop_reason:        # the run is stopping: start nothing new
-                self.task_queue.task_done()
+                self._done(task)
                 return
 
             try:
@@ -592,13 +757,22 @@ class JobProcessor:
             match task.result:
                 case ChapterResult.SUCCESS:
                     logger.debug("Task success: {} - {}", task.course["title"], task.point["title"])
-                    self.task_queue.task_done()
+                    self._settle_manual(task)
+                    self._done(task)
                     logger.debug(f"unfinished task: {self.task_queue.unfinished_tasks}")
 
                 case ChapterResult.NOT_OPEN:
+                    if self._others_active(task):
+                        # Earlier chapters of this course are still in progress: it may open when they
+                        # are done. Wait for them (not a try, nothing logged per attempt).
+                        logger.debug("章节未开启，等前面的章节完成后再试: {} - {}", task.course["title"], task.point["title"])
+                        self._hold(task)
+                        continue
+
                     if self.config["notopen_action"] == "continue":
                         logger.warning("章节未开启: {} - {}, 正在跳过", task.course["title"], task.point["title"])
-                        self.task_queue.task_done()
+                        self._drop_locked(task)
+                        self._done(task)
                         continue
 
                     task.tries += 1
@@ -607,7 +781,8 @@ class JobProcessor:
                             "章节未开启: {} - {} 可能由于上一章节的章节检测未完成, 也可能由于该章节因为时效已关闭，"
                             "请手动检查完成并提交再重试。或者在配置中配置(自动跳过关闭章节/开启题库并启用提交)"
                             , task.course["title"], task.point["title"])
-                        self.task_queue.task_done()
+                        self._drop_locked(task)
+                        self._done(task)
                         continue
 
                     # self.wait_queue.put(task)
@@ -628,7 +803,7 @@ class JobProcessor:
                 case _:
                     logger.error("任务 {} 的状态无效 {}", task.result, task.point["title"])
                     self.failed_tasks.append(task)
-                    self.task_queue.task_done()
+                    self._done(task)
 
     @log_error
     def retry_thread(self):
@@ -700,7 +875,8 @@ def process_chapter(chaoxing: Chaoxing, course: dict[str, Any], point: dict[str,
 
     job_results: list[StudyResult] = []
     for job in jobs:
-        result = process_job(chaoxing, course, job, job_info, speed, point)
+        with telemetry.timed(f"task.{job.get('type') if _automated(job) else 'other'}"):
+            result = process_job(chaoxing, course, job, job_info, speed, point)
         job_results.append(result)
         if not _automated(job):
             telemetry.count("other.manual")
@@ -795,9 +971,13 @@ def main():
         common_config["speed"] = 1.0
         common_config["notopen_action"] = common_config.get("notopen_action", "retry")
         
-        telemetry.configure(str_to_bool(common_config.get("telemetry", False)), os.getcwd())
-        global AUTO_DOCUMENTS
+        # 匿名统计默认开启（引导里有说明，设置 → 数据与隐私 可关闭）；关闭时什么都不记、不传
+        telemetry.configure(str_to_bool(common_config.get("telemetry", True)), os.getcwd())
+        telemetry.flush()                      # reports a previous run could not send
+        telemetry.gauge("cfg.jobs", int(common_config.get("jobs", 1) or 1))
+        global AUTO_DOCUMENTS, AUTO_LIVE
         AUTO_DOCUMENTS = str_to_bool(common_config.get("auto_documents", True))
+        AUTO_LIVE = str_to_bool(common_config.get("auto_live", True))
         auto_homework = str_to_bool(common_config.get("auto_homework", True))
         homework_submit = str_to_bool(common_config.get("homework_submit", True))
         watch_activities = str_to_bool(common_config.get("watch_activities", True))
@@ -890,6 +1070,7 @@ def main():
         report = completion_report(stats)
         if report:
             logger.info(report)
+        manual.confirm_all()            # nothing stays "正在确认" when the run ends
         pending = manual.summary()
         tail = f"\n{report}" if report else ""
         if pending:
@@ -936,6 +1117,7 @@ def main():
     except BaseException as e:
         logger.error(f"错误: {type(e).__name__}: {e}")
         logger.error(traceback.format_exc())
+        telemetry.record_crash(e, "worker.crash")       # type and code location only, scrubbed
         try:
             notification.send(f"chaoxing : 出现错误 {type(e).__name__}: {e}\n{traceback.format_exc()}")
         except Exception:
@@ -943,6 +1125,7 @@ def main():
         raise e
     finally:
         telemetry.save()
+        telemetry.flush(wait=6)                # a few seconds to send; what is left waits for next time
 
 
 if __name__ == "__main__":

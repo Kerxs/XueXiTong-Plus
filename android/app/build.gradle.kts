@@ -33,8 +33,8 @@ android {
         applicationId = "io.github.kerxs.xxtplus"
         minSdk = 24
         targetSdk = 35
-        versionCode = 10209
-        versionName = "1.2.9"
+        versionCode = 10300
+        versionName = "1.3.0"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
@@ -55,13 +55,20 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8: the two dex files were 39 MB of unshrunk library code (proguard-rules.pro).
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Without the release key (e.g. on another machine) fall back to the debug key.
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
     sourceSets["main"].assets.srcDir(sharedAssets.get().asFile)
+
+    // Native libraries (Python itself, OpenSSL, SQLite: 24 MB) are compressed inside the APK. The
+    // download is about 12 MB smaller; the system unpacks them when installing.
+    packaging { jniLibs { useLegacyPackaging = true } }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -48,8 +48,13 @@ class ReportTest(unittest.TestCase):
                         {"type": "other", "card_type": "questionnaire", "jobid": "q", "name": "问卷"},
                         {"type": "read", "jobid": "r", "title": "拓展阅读"}):        # same one again
                 self.assertEqual(main.process_job(None, course, job, {}, 1.0, point), StudyResult.SUCCESS)
+            # first only "可能需要手动，正在确认": listed quietly, nothing pushed
+            self.assertEqual(self.sent, [])
+            self.assertEqual(manual.items(), [])
+            manual.confirm_all()
         events = [json.loads(l[len(manual.PREFIX):]) for l in out.getvalue().splitlines() if l.startswith(manual.PREFIX)]
-        self.assertEqual([e["kind"] for e in events], ["阅读", "问卷"])
+        self.assertEqual([(e["kind"], e.get("checking", False)) for e in events],
+                         [("阅读", True), ("问卷", True), ("阅读", False), ("问卷", False)])
         self.assertEqual(len(self.sent), 2)
         self.assertIn("需要手动完成：阅读「拓展阅读」", self.sent[0])
         self.assertIn("有 2 项内容需要手动完成", manual.summary())

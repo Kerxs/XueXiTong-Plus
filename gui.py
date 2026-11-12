@@ -66,6 +66,12 @@ def _install_log() -> None:
 
         log.write("".join(traceback.format_exception(kind, value, tb)))
         log.flush()
+        try:        # anonymous crash statistics (when switched on): type and code location only
+            from api import telemetry
+
+            telemetry.record_crash(value, "app.crash")
+        except Exception:  # noqa: BLE001
+            pass
 
     sys.excepthook = excepthook
 
@@ -81,7 +87,10 @@ def main() -> None:
     _install_log()
     os.environ["QT_WEBVIEW_PLUGIN"] = "native"
     QGuiApplication.setApplicationName(APP_NAME)
-    QGuiApplication.setOrganizationName("ChaoxingDesktop")
+    # Interface preferences live in the registry under this name. Tests and measurements set
+    # CHAOXING_DESKTOP_SETTINGS_ORG so they never read or write the real user's preferences
+    # (APPDATA alone does not isolate them).
+    QGuiApplication.setOrganizationName(os.environ.get("CHAOXING_DESKTOP_SETTINGS_ORG") or "ChaoxingDesktop")
     QtWebView.initialize()
     # QApplication (not QGuiApplication): the tray icon and its menu are widgets.
     app = QApplication(sys.argv)

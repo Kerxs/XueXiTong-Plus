@@ -170,6 +170,7 @@ class DocumentsTest(unittest.TestCase):
         cx.study_document.return_value = StudyResult.ERROR
         with mock.patch.object(manual, "print"), mock.patch.object(manual.logger, "warning"):
             result = main.process_job(cx, {"title": "c"}, {"type": "document", "jobid": "d", "name": "教案"}, {}, 1.0, {"title": "1.1"})
+            manual.confirm_all()
         self.assertEqual(result, StudyResult.SUCCESS)               # not retried
         self.assertEqual(manual.items()[0]["name"], "教案")
 
@@ -187,7 +188,7 @@ class SettingsTest(unittest.TestCase):
 
         group = next(g for g in advanced.GROUPS if g["id"] == "auto")
         ids = [f["id"] for f in group["fields"]]
-        self.assertEqual(ids, ["common.auto_documents", "common.auto_homework", "common.homework_submit",
+        self.assertEqual(ids, ["common.auto_documents", "common.auto_live", "common.auto_homework", "common.homework_submit",
                                "common.watch_activities"])
         self.assertTrue(all(f["default"] == "true" for f in group["fields"]))
 

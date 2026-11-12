@@ -38,6 +38,9 @@ _PS_LISTENERS = ("Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Obj
 
 def _run(args: list[str], timeout: float = 10) -> str:
     try:
+        from ui import winsetup
+
+        args = [winsetup.system_exe(args[0]), *args[1:]]         # Windows' own netstat / powershell
         return subprocess.run(args, capture_output=True, text=True, timeout=timeout,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout or ""
     except (OSError, subprocess.SubprocessError):

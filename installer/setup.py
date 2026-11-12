@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """学习通PLUS setup program (QML UI in installer/qml/Setup.qml).
 
-The release zip is appended to the end of the built setup exe; ``zipfile`` finds its
-central directory from the file's end, so the exe can be opened as the archive
-directly. For development pass ``--payload path\\to\\XueXiTong-Plus-Windows-<ver>.zip``.
+The files to install are appended to the end of the built setup exe (installer/payload.py: one
+solid .tar.xz stream; the Qt and Python files the setup program carries itself are copied from
+its own folder instead of being stored twice). For development pass
+``--payload path\\to\\XueXiTong-Plus-Windows-<ver>.zip``.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ import os
 import shutil
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
@@ -23,6 +23,7 @@ from PySide6.QtGui import QFont, QGuiApplication, QIcon  # noqa: E402
 from PySide6.QtQml import QQmlApplicationEngine  # noqa: E402
 from PySide6.QtQuickControls2 import QQuickStyle  # noqa: E402
 
+from installer.payload import Payload  # noqa: E402
 from ui import runtime_deps, winsetup  # noqa: E402
 from ui.controller import APP_VERSION as VERSION  # noqa: E402
 ZIP_ROOT = winsetup.APP_NAME + "/"
@@ -32,20 +33,6 @@ def payload_path(argv: list[str]) -> Path:
     if "--payload" in argv:
         return Path(argv[argv.index("--payload") + 1])
     return Path(sys.executable)
-
-
-def _members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
-    out = []
-    for info in archive.infolist():
-        name = info.filename.replace("\\", "/")
-        if not name.startswith(ZIP_ROOT) or name.endswith("/"):
-            continue
-        rel = name[len(ZIP_ROOT):]
-        # Qt build leftovers: very deep paths, never loaded.
-        if "/objects-" in "/" + rel or rel.endswith(".obj"):
-            continue
-        out.append(info)
-    return out
 
 
 class InstallWorker(QThread):
@@ -86,20 +73,11 @@ class InstallWorker(QThread):
             if internal.exists():
                 shutil.rmtree(internal)
 
-        with zipfile.ZipFile(self.payload) as archive:
-            members = _members(archive)
-            if not members:
-                raise RuntimeError("安装包内容为空或已损坏。")
-            total = sum(m.file_size for m in members) or 1
-            done = 0
-            for info in members:
-                rel = info.filename.replace("\\", "/")[len(ZIP_ROOT):]
-                dest = target / Path(rel)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(info) as src, open(dest, "wb") as dst:
-                    shutil.copyfileobj(src, dst, 1024 * 1024)
-                done += info.file_size
-                self.progressed.emit(0.05 + 0.75 * done / total, rel)
+        payload = Payload(self.payload, ZIP_ROOT)
+        total = payload.size or 1
+        # Files the setup program carries itself (its own Qt and Python) are copied from its folder.
+        payload.extract(target, lambda fraction, rel: self.progressed.emit(0.05 + 0.75 * fraction, rel),
+                        shared_root=getattr(sys, "_MEIPASS", None))
 
         # A missing runtime does not fail the install: the app still runs, only the
         # video preview needs WebView2. The finish page reports what went wrong.
@@ -140,13 +118,9 @@ class Installer(QObject):
         self._installed = winsetup.read_installed()
         self._size_mb = 0
         self._payload_ok = False
-        try:
-            with zipfile.ZipFile(payload) as archive:
-                members = _members(archive)
-                self._payload_ok = bool(members)
-                self._size_mb = round(sum(m.file_size for m in members) / 1024 / 1024)
-        except (OSError, zipfile.BadZipFile):
-            self._payload_ok = False
+        info = Payload(payload, ZIP_ROOT)
+        self._payload_ok = info.ok
+        self._size_mb = round(info.size / 1024 / 1024)
 
     version = Property(str, lambda self: VERSION, constant=True)
     appName = Property(str, lambda self: winsetup.DISPLAY_NAME, constant=True)
@@ -257,8 +231,23 @@ def silent_install(argv: list[str]) -> int:
     return 1 if errors else 0
 
 
+def extract_only(argv: list[str]) -> int:
+    """``--extract PATH``: only unpack the program's files into PATH — no registry entry, no
+    shortcuts, no check for a running copy. For a portable copy, and to verify a built setup
+    program without touching the installed one."""
+    target = Path(argv[argv.index("--extract") + 1])
+    try:
+        Payload(payload_path(argv), ZIP_ROOT).extract(target, shared_root=getattr(sys, "_MEIPASS", None))
+    except Exception as exc:  # noqa: BLE001
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main() -> None:
     _install_log()
+    if "--extract" in sys.argv:
+        raise SystemExit(extract_only(sys.argv))
     if "--silent" in sys.argv:
         raise SystemExit(silent_install(sys.argv))
     QGuiApplication.setApplicationName(f"{winsetup.APP_NAME} 安装程序")

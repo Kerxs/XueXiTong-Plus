@@ -1,30 +1,28 @@
 # -*- coding: utf-8 -*-
-"""Build the installer payload: the release folder as an LZMA zip.
+"""Build the installer payload from the release folder (see installer/payload.py for the format).
 
-The setup program reads the payload with ``zipfile``, which handles LZMA, and LZMA makes
-the download about a quarter smaller than Deflate (98 -> 72 MB for 1.1.9). The separate
-no-install zip stays Deflate because Windows Explorer cannot open LZMA zips.
+Usage: python make_payload.py <dist>\\学习通PLUS <out.bin> [setup-manifest.json]
 
-Usage: python make_payload.py <dist>\\学习通PLUS <out.zip>
+The manifest ({path in the setup program's own folder: sha256}) is written by packaging/setup.spec
+when the setup program is built; files it lists with the same content are not stored again.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
-import zipfile
+from pathlib import Path
 
-
-def build(release_dir: str, out: str) -> None:
-    base = os.path.dirname(os.path.abspath(release_dir))
-    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_LZMA) as archive:
-        for dirpath, _dirs, files in os.walk(release_dir):
-            for name in sorted(files):
-                full = os.path.join(dirpath, name)
-                # Entries start with the folder name ("学习通PLUS/..."), like the release zip.
-                archive.write(full, os.path.relpath(full, base).replace("\\", "/"))
-
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from installer.payload import build  # noqa: E402
 
 if __name__ == "__main__":
-    build(sys.argv[1], sys.argv[2])
-    print(f"payload: {os.path.getsize(sys.argv[2]) / 1024 / 1024:.0f} MB (LZMA)")
+    manifest = None
+    if len(sys.argv) > 3 and os.path.isfile(sys.argv[3]):
+        with open(sys.argv[3], encoding="utf-8") as fp:
+            manifest = json.load(fp)
+    header = build(sys.argv[1], sys.argv[2], manifest)
+    shared = sum(item["size"] for item in header["shared"])
+    print(f"payload: {os.path.getsize(sys.argv[2]) / 1048576:.1f} MB for {header['size'] / 1048576:.0f} MB "
+          f"({header['files']} files; {len(header['shared'])} files / {shared / 1048576:.0f} MB shared with the setup program)")

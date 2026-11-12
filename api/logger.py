@@ -1,3 +1,4 @@
+import os
 import sys
 
 from loguru import logger
@@ -77,4 +78,36 @@ def tqdm_sink(msg):
 logger.remove()
 logger.configure(patcher=_patch)
 logger.add(tqdm_sink, colorize=True, enqueue=can_enqueue())
-logger.add("chaoxing.log", rotation="10 MB", level="TRACE")
+# The log file: DEBUG and up. TRACE lines hold whole 学习通 pages (names, course content) and used
+# to make up two thirds of every file; set CHAOXING_TRACE=1 to write them when a page has to be
+# looked at. Old files used to be kept for ever.
+#
+# Kept: LOG_DAYS days, so a problem from a few weeks ago can still be looked up — but never more
+# than LOG_FILES_MAX files (10 MB each), whatever their age, so the folder cannot grow without end.
+LOG_DAYS = 30
+LOG_FILES_MAX = 30
+
+
+def _expired_logs(files: list) -> None:
+    """loguru retention: called with every log file when a new one is started."""
+    import time
+
+    limit = time.time() - LOG_DAYS * 86400
+
+    def modified(path) -> float:
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            return 0.0
+
+    newest_first = sorted(files, key=modified, reverse=True)
+    for index, path in enumerate(newest_first):
+        if index >= LOG_FILES_MAX or modified(path) < limit:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+logger.add("chaoxing.log", rotation="10 MB", retention=_expired_logs,
+           level="TRACE" if os.environ.get("CHAOXING_TRACE") == "1" else "DEBUG")

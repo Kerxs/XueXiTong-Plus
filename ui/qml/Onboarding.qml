@@ -31,8 +31,39 @@ Rectangle {
         return i
     }
     readonly property bool agreed: typed === target
-    readonly property var steps: ["欢迎", "免责声明", "账号", "自动完成", "高级设置", "开始使用"]
-    readonly property int lastStep: steps.length - 1
+    readonly property var steps: [needDisclaimer ? "欢迎与声明" : "欢迎", "免责声明", "账号", "自动完成", "答题来源", "开始使用", "匿名统计"]
+    // The statement still has to be written (first run, or its text changed): it is on the first page.
+    property bool needDisclaimer: true
+    // The pages are numbered as in `steps`; `order` is the ones shown this time. Someone who
+    // finished an older guide only gets the pages that are new since then (controller.onboardingSteps),
+    // and a disclaimer already accepted in its current wording is not asked again.
+    readonly property var stepIds: ["welcome", "disclaimer", "account", "auto", "advanced", "start", "telemetry"]
+    property var order: [0, 2, 4, 5]
+    property bool newOnly: false
+    readonly property int position: Math.max(0, order.indexOf(step))
+    readonly property int lastStep: order.length > 0 ? order[order.length - 1] : 0
+    function plan() {
+        const ids = controller.onboardingSteps          // in the order they are shown
+        newOnly = controller.onboardingNewOnly
+        needDisclaimer = ids.indexOf("disclaimer") >= 0
+        const list = []
+        for (let i = 0; i < ids.length; ++i) {
+            let at = stepIds.indexOf(ids[i])
+            if (at < 0) continue
+            // The statement shares the first page. In the complete guide the 自动完成 and 匿名统计
+            // switches are on the last page (they have sensible defaults) instead of a page each:
+            // 欢迎与声明 → 账号 → 答题来源 → 开始使用. Someone who only gets what is new still sees
+            // a new page on its own.
+            if (at === 1) at = 0
+            if (!newOnly && (at === 3 || at === 6)) continue
+            if (list.indexOf(at) < 0) list.push(at)
+        }
+        order = list.length > 0 ? list : [0, 2, 4, 5]
+    }
+    function skipAll() {
+        controller.finishOnboarding()
+        guide.completed()
+    }
     readonly property bool accountReady: controller.useCookies
         || (controller.username.trim() !== "" && controller.password !== "")
 
@@ -42,7 +73,8 @@ Rectangle {
     MouseArea { anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.AllButtons }
 
     function reset() {
-        step = 0
+        plan()
+        step = order[0]
         direction = 1
         accountSkipped = false
         answerSkipped = false
@@ -62,8 +94,8 @@ Rectangle {
             if (!controller.saveConfig())
                 return
         }
-        if (step < steps.length - 1)
-            go(step + 1)
+        if (position < order.length - 1)
+            go(order[position + 1])
     }
 
     // "自动完成：视频、章节检测、课件、作业（自动提交）" from the 自动完成 switches.
@@ -72,13 +104,14 @@ Rectangle {
         const on = id => ["true", "1", "yes", "on"].indexOf(String(v[id] !== undefined ? v[id] : "true").toLowerCase()) >= 0
         const parts = ["视频", "章节检测"]
         if (on("common.auto_documents")) parts.push("课件")
+        if (on("common.auto_live")) parts.push("直播")
         if (on("common.auto_homework")) parts.push(on("common.homework_submit") ? "作业（自动提交）" : "作业（只保存）")
         return "自动完成：" + parts.join("、") + (on("common.watch_activities") ? "；随堂练习会提醒你。" : "。")
     }
 
     function skipAccount() {
         accountSkipped = true
-        go(3)        // 自动完成 has defaults: nothing to fill in, so it is not skipped
+        go(order[Math.min(position + 1, order.length - 1)])   // 自动完成 has defaults: it is not skipped
     }
 
     function skipAnswer() {
@@ -86,11 +119,16 @@ Rectangle {
         go(lastStep)
     }
 
-    onVisibleChanged: if (visible) entrance.restart()
+    onVisibleChanged: if (visible) { plan(); if (order.indexOf(step) < 0) step = order[0]; entrance.restart() }
+    Component.onCompleted: { plan(); step = order[0] }
 
     // On a first start the splash logo lands on the welcome page's icon and title
     // (Main.qml introLogo). They are hidden while it is in flight and shown in the frame it lands.
     property bool brandHidden: false
+    // The welcome page (with the icon and title the splash logo lands on) is the one on screen.
+    // Not so for someone who only gets what is new, or who is asked a changed statement only… the
+    // first page is then another one.
+    readonly property bool welcomeOnScreen: order.length > 0 && order[0] === 0 && step === 0
     readonly property alias welcomeIconItem: welcomeIcon
     readonly property alias welcomeTitleItem: welcomeTitle
     readonly property real enterOffset: panelShift.y   // the card slides in by this much
@@ -125,24 +163,33 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.bottomMargin: 24
                 spacing: 8
+                Text {
+                    visible: guide.newOnly
+                    text: "有新内容"
+                    color: Theme.accent
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                    rightPadding: 6
+                }
                 Repeater {
-                    model: guide.steps
+                    model: guide.order.map(i => guide.steps[i])
                     RowLayout {
                         required property string modelData
                         required property int index
-                        readonly property bool reached: index <= guide.step
+                        readonly property bool reached: index <= guide.position
                         spacing: 8
                         Rectangle {
                             width: 24; height: 24; radius: 12
                             color: parent.reached ? Theme.accent : Theme.surfaceAlt
                             border.color: parent.reached ? Theme.accent : Theme.border
-                            scale: index === guide.step ? 1.08 : 1
+                            scale: index === guide.position ? 1.08 : 1
                             Behavior on color { ColorAnimation { duration: Theme.normal } }
                             Behavior on scale { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutBack } }
                             Text {
                                 anchors.centerIn: parent
-                                text: index < guide.step ? "" : String(index + 1)
-                                font.family: index < guide.step ? Theme.iconFont : Theme.uiFont
+                                text: index < guide.position ? "" : String(index + 1)
+                                font.family: index < guide.position ? Theme.iconFont : Theme.uiFont
                                 font.pixelSize: 11
                                 font.weight: Font.DemiBold
                                 color: parent.parent.reached ? Theme.accentText : Theme.muted
@@ -150,15 +197,15 @@ Rectangle {
                         }
                         Text {
                             text: modelData
-                            color: index === guide.step ? Theme.text : Theme.muted
+                            color: index === guide.position ? Theme.text : Theme.muted
                             font.family: Theme.uiFont
                             font.pixelSize: 13
-                            font.weight: index === guide.step ? Font.DemiBold : Font.Normal
+                            font.weight: index === guide.position ? Font.DemiBold : Font.Normal
                             Behavior on color { ColorAnimation { duration: Theme.normal } }
                         }
                         // Connector line that fills as the guide advances.
                         Rectangle {
-                            visible: index < guide.steps.length - 1
+                            visible: index < guide.order.length - 1
                             Layout.preferredWidth: 28
                             height: 2
                             radius: 1
@@ -167,7 +214,7 @@ Rectangle {
                                 height: parent.height
                                 radius: 1
                                 color: Theme.accent
-                                width: index < guide.step ? parent.width : 0
+                                width: index < guide.position ? parent.width : 0
                                 Behavior on width { NumberAnimation { duration: Theme.slow; easing.type: Easing.OutCubic } }
                             }
                         }
@@ -191,7 +238,7 @@ Rectangle {
                     readonly property bool current: guide.step === pageIndex
                     opacity: current ? 1 : 0
                     visible: opacity > 0.01
-                    x: current ? 0 : (pageIndex < guide.step ? -48 : 48)
+                    x: current ? 0 : (guide.order.indexOf(pageIndex) < guide.position ? -48 : 48)
                     Behavior on opacity { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
                     Behavior on x { NumberAnimation { duration: Theme.slow; easing.type: Easing.OutCubic } }
                 }
@@ -201,16 +248,18 @@ Rectangle {
                     pageIndex: 0
                     ColumnLayout {
                         anchors.fill: parent
-                        spacing: 16
-                        Item { Layout.preferredHeight: 6 }
+                        spacing: guide.needDisclaimer ? 10 : 16
+                        Item { Layout.preferredHeight: guide.needDisclaimer ? 0 : 6 }
                         Image {
                             id: welcomeIcon
                             source: controller.iconUrl
                             // 256 px texture + mipmaps: sharp on 150 % / 200 % displays and sampled
                             // exactly like the flying splash logo that lands here.
                             sourceSize: Qt.size(256, 256)
-                            Layout.preferredWidth: 84
-                            Layout.preferredHeight: 84
+                            // smaller while the statement shares the page (the splash logo lands on
+                            // whatever size and place this has)
+                            Layout.preferredWidth: guide.needDisclaimer ? 52 : 84
+                            Layout.preferredHeight: guide.needDisclaimer ? 52 : 84
                             smooth: true
                             mipmap: true
                             opacity: guide.brandHidden ? 0 : 1
@@ -225,14 +274,17 @@ Rectangle {
                         Text { id: welcomeTitle; opacity: guide.brandHidden ? 0 : 1; text: controller.appName; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 26; font.weight: Font.Bold }
                         Text {
                             Layout.fillWidth: true
-                            text: "用几步完成初始设置。之后可以随时在“设置”页修改。"
+                            text: guide.needDisclaimer
+                                ? "先读一遍下面的声明并照着写一遍，然后填账号、选答题来源，就可以开始了。"
+                                : "用几步完成初始设置。之后可以随时在“设置”页修改。"
                             color: Theme.muted
                             font.family: Theme.uiFont
                             font.pixelSize: 14
                             wrapMode: Text.Wrap
                         }
                         Repeater {
-                            model: [
+                            // (not while the statement is on this page: there is no room for both)
+                            model: guide.needDisclaimer ? [] : [
                                 { glyph: "", text: "运行面板：课程、章节、任务进度和日志一目了然" },
                                 { glyph: "", text: "可视化面板：只读查看当前视频和章节检测内容" },
                                 { glyph: "", text: "配置、cookies 和日志只保存在本机" }
@@ -260,25 +312,11 @@ Rectangle {
                                 Text { text: modelData.text; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 13 }
                             }
                         }
-                        Item { Layout.fillHeight: true }
-                    }
-                }
-
-                // 1 免责声明 — the user writes the statement out (the text stays selectable).
-                Page {
-                    pageIndex: 1
-                    ColumnLayout {
-                        anchors.fill: parent
-                        spacing: 10
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Text { text: "免责声明"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 22; font.weight: Font.Bold }
-                            Item { Layout.fillWidth: true }
-                        }
                         Rectangle {
+                            visible: guide.needDisclaimer
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            Layout.minimumHeight: 120
+                            Layout.minimumHeight: 90
                             radius: Theme.radius
                             color: Theme.sunken
                             ScrollView {
@@ -303,6 +341,7 @@ Rectangle {
                             }
                         }
                         RowLayout {
+                            visible: guide.needDisclaimer
                             Layout.fillWidth: true
                             Text {
                                 text: "请在下方完整写一遍上面的声明"
@@ -321,8 +360,9 @@ Rectangle {
                             }
                         }
                         Rectangle {
+                            visible: guide.needDisclaimer
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 116
+                            Layout.preferredHeight: 92
                             radius: Theme.radius
                             color: Theme.surface
                             border.width: 1
@@ -363,6 +403,29 @@ Rectangle {
                                 Behavior on width { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
                             }
                         }
+                        Item { visible: !guide.needDisclaimer; Layout.fillHeight: true }
+                    }
+                }
+
+                // 1 免责声明 — the user writes the statement out (the text stays selectable).
+                Page {
+                    pageIndex: 1
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: 10
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "免责声明"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 22; font.weight: Font.Bold }
+                            Item { Layout.fillWidth: true }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "免责声明现在在第一页“欢迎与声明”里。"
+                            color: Theme.muted
+                            font.family: Theme.uiFont
+                            font.pixelSize: 13
+                        }
+                        Item { Layout.fillHeight: true }
                     }
                 }
 
@@ -540,15 +603,77 @@ Rectangle {
                     }
                 }
 
+                // 6 匿名统计 (shown before 开始使用; the only page users of an older guide see in 1.3.0)
+                Page {
+                    pageIndex: 6
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: 12
+                        Text { text: "匿名统计"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 22; font.weight: Font.Bold }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "为了知道哪些功能容易出问题、该先修什么，学习通 PLUS 会统计匿名的使用数据。这项默认开启，你可以现在就关掉，之后也能在“设置 → 数据与隐私”里随时更改。"
+                            color: Theme.muted
+                            font.family: Theme.uiFont
+                            font.pixelSize: 13
+                            lineHeight: 1.3
+                            wrapMode: Text.Wrap
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: facts.implicitHeight + 28
+                            radius: Theme.radius
+                            color: Theme.surfaceAlt
+                            ColumnLayout {
+                                id: facts
+                                anchors.fill: parent
+                                anchors.margins: 14
+                                spacing: 8
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "只统计数字：各类任务成功 / 失败的次数和耗时、验证码和网络错误的次数、启动时间和内存占用、版本和系统版本；程序出错时再加上错误类型和出错的代码位置。"
+                                    color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 13; lineHeight: 1.3; wrapMode: Text.Wrap
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "不收集账号、密码、cookies、课程和题目内容、答案、AI 对话、文件和日志。"
+                                    color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 13; font.weight: Font.DemiBold; lineHeight: 1.3; wrapMode: Text.Wrap
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: controller.telemetryUploads
+                                        ? "数据用一个随机编号上传（与账号无关），服务器保留 90 天；关闭后立即停止，并删除本机还没发送的数据。"
+                                        : "这个版本还没有接入统计服务器，数据只保存在本机；关闭后会删除本机的统计。"
+                                    color: Theme.muted; font.family: Theme.uiFont; font.pixelSize: 12; lineHeight: 1.3; wrapMode: Text.Wrap
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 12
+                            Text {
+                                Layout.fillWidth: true
+                                text: "发送匿名统计"
+                                color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 14; font.weight: Font.DemiBold
+                            }
+                            AppSwitch {
+                                checked: controller.telemetryEnabled
+                                onToggled: controller.telemetryEnabled = checked
+                            }
+                        }
+                        Item { Layout.fillHeight: true }
+                    }
+                }
+
                 // 5 开始使用
                 Page {
                     pageIndex: 5
                     ColumnLayout {
                         anchors.fill: parent
-                        spacing: 14
-                        Item { Layout.preferredHeight: 6 }
+                        spacing: 10
                         Rectangle {
                             id: doneBadge
+                            visible: guide.newOnly
                             width: 64; height: 64; radius: 32
                             color: guide.accountSkipped ? Theme.warningSoft : Theme.successSoft
                             scale: guide.step === guide.lastStep ? 1 : 0.5
@@ -604,7 +729,57 @@ Rectangle {
                                 wrapMode: Text.Wrap
                             }
                         }
-                        Item { Layout.fillHeight: true }
+                        // What used to be two pages of their own: both have defaults, so they are
+                        // shown here to look over, not asked one by one.
+                        ScrollView {
+                            id: lastOptions
+                            visible: !guide.newOnly
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            contentWidth: availableWidth
+                            clip: true
+                            ColumnLayout {
+                                width: lastOptions.availableWidth
+                                spacing: 6
+                                AdvancedOptions {
+                                    Layout.fillWidth: true
+                                    embedded: true
+                                    stacked: true
+                                    only: ["auto"]
+                                    title: ""
+                                    subtitle: ""
+                                    icon: ""
+                                    padding: 2
+                                    color: "transparent"
+                                    border.width: 0
+                                }
+                                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Layout.leftMargin: 2
+                                    Layout.rightMargin: 14
+                                    spacing: 12
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 2
+                                        Text { text: "发送匿名统计"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 13 }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: "只有数字（各类任务成功 / 失败次数和耗时、错误类型、启动时间和内存、版本），不含账号、课程、题目和日志；可以随时在“设置 → 数据与隐私”关闭"
+                                            color: Theme.muted
+                                            font.family: Theme.uiFont
+                                            font.pixelSize: 12
+                                            wrapMode: Text.Wrap
+                                        }
+                                    }
+                                    AppSwitch {
+                                        checked: controller.telemetryEnabled
+                                        onToggled: controller.telemetryEnabled = checked
+                                    }
+                                }
+                            }
+                        }
+                        Item { visible: guide.newOnly; Layout.fillHeight: true }
                     }
                 }
             }
@@ -614,11 +789,11 @@ Rectangle {
                 Layout.fillWidth: true
                 spacing: 10
                 AppButton {
-                    visible: guide.step > 0
+                    visible: guide.position > 0
                     text: "上一步"
                     kind: "ghost"
                     glyph: ""
-                    onClicked: guide.go(guide.step - 1)
+                    onClicked: guide.go(guide.order[guide.position - 1])
                 }
                 Item { Layout.fillWidth: true }
                 Text {
@@ -631,31 +806,42 @@ Rectangle {
                     elide: Text.ElideRight
                 }
                 Text {
-                    visible: guide.step === 1 && !guide.agreed
+                    visible: guide.step === 0 && guide.needDisclaimer && !guide.agreed
                     text: guide.typedCount > 0 && !guide.onTrack ? "从第 " + (guide.matchedCount + 1) + " 个字开始不一致" : "写完声明后才能继续"
                     color: Theme.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 12
                 }
                 AppButton {
-                    visible: guide.step === 2 || guide.step === 4
-                    text: "稍后配置"
-                    onClicked: guide.step === 2 ? guide.skipAccount() : guide.skipAnswer()
+                    // The short "what is new" guide can be left at once; nothing in it is required
+                    // (a changed disclaimer still has to be written out).
+                    visible: guide.newOnly && !(guide.step === 0 && guide.needDisclaimer)
+                    text: "跳过"
+                    kind: "ghost"
+                    onClicked: guide.skipAll()
+                }
+                AppButton {
+                    visible: !guide.newOnly && (guide.step === 2 || guide.step === 3 || guide.step === 4) && guide.step !== guide.lastStep
+                    text: guide.step === 3 ? "跳过" : "稍后配置"
+                    onClicked: guide.step === 2 ? guide.skipAccount() : guide.step === 3 ? guide.go(guide.order[guide.position + 1]) : guide.skipAnswer()
                 }
                 AppButton {
                     objectName: "nextButton"
-                    visible: guide.step < guide.steps.length - 1
+                    visible: guide.step !== guide.lastStep
                     text: guide.step === 0 ? "开始设置" : "下一步"
                     kind: "primary"
-                    enabled: (guide.step !== 1 || guide.agreed) && (guide.step !== 2 || guide.accountReady)
+                    enabled: (guide.step !== 0 || !guide.needDisclaimer || guide.agreed) && (guide.step !== 2 || guide.accountReady)
                              && (guide.step !== 4 || controller.answerSetupProblem === "")
                     onClicked: guide.next()
                 }
                 AppButton {
-                    visible: guide.step === guide.steps.length - 1
-                    text: guide.accountSkipped ? "先进去看看" : "开始使用"
+                    visible: guide.step === guide.lastStep
+                    text: guide.newOnly ? "完成" : guide.accountSkipped ? "先进去看看" : "开始使用"
                     kind: "primary"
+                    enabled: (guide.step !== 0 || !guide.needDisclaimer || guide.agreed) && (guide.step !== 4 || controller.answerSetupProblem === "")
                     onClicked: {
+                        if (guide.step >= 2 && guide.step <= 4 && !controller.saveConfig())
+                            return
                         controller.finishOnboarding()
                         guide.completed()
                     }

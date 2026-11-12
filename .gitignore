@@ -162,3 +162,7 @@ myConfig/
 
 # Packaging specs are source here
 !packaging/*.spec
+
+# Cloudflare wrangler local state (account details)
+.wrangler/
+node_modules/

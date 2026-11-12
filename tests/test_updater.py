@@ -1,6 +1,7 @@
 import hashlib
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication
@@ -91,7 +92,10 @@ class DownloadTestCase(unittest.TestCase):
             out = {}
             w.done.connect(lambda p: out.setdefault("done", p))
             w.failed.connect(lambda m: out.setdefault("failed", m))
-            w.run()  # synchronous
+            # a local file stands in for the download; the address rule has its own tests
+            # (tests/test_v130_security.py)
+            with mock.patch.object(upd, "trusted_download", return_value=True):
+                w.run()  # synchronous
             if "done" in out:
                 data = Path(out["done"]).read_bytes()
                 Path(out["done"]).unlink()

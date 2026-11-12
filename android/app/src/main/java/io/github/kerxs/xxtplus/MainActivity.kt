@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         ContextCompat.registerReceiver(this, RunState.receiver, IntentFilter(TaskService.ACTION_EVENT),
             ContextCompat.RECEIVER_NOT_EXPORTED)
+        RunState.loadPreviewMode(this)
         RunState.sync(this)
         RunState.notificationsAllowed = hasNotificationPermission(this)
     }
@@ -85,9 +86,49 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// 2: + 自动完成 step (1.2.8)
-private const val ONBOARDING_VERSION = 2
 private fun prefs(ctx: Context) = ctx.getSharedPreferences("app", Context.MODE_PRIVATE)
+
+/**
+ * Which pages of the guide to show (like ui/controller.onboarding_plan on the desktop). Someone who
+ * finished an older guide only gets the pages that are new since then, and can skip them; the
+ * disclaimer is asked again only when its text changes.
+ */
+object Guide {
+    // 2: + 自动完成 step (1.2.8) · 3: + 匿名统计 (1.3.0)
+    const val VERSION = 3
+    const val TELEMETRY_PAGE = 5
+    const val AUTO_PAGE = 3
+    /** Bump when the DISCLAIMER text changes: everyone has to accept it once more. */
+    const val DISCLAIMER_VERSION = 1
+    const val DISCLAIMER_PAGE = 1
+    /** Page index (as in OnboardingScreen) to the guide version that added or last changed it. */
+    private val since = listOf(1, 1, 1, 2, 1, 3, 1)   // 欢迎, 免责声明, 账号, 自动完成, 答题来源, 匿名统计, 权限设置
+
+    fun plan(seen: Int, disclaimer: Int): Pair<List<Int>, Boolean> {
+        val needDisclaimer = disclaimer < DISCLAIMER_VERSION
+        // The complete guide is four pages: 欢迎与声明 → 账号 → 答题来源 → 权限设置. The welcome text is
+        // on the disclaimer page, and the 自动完成 / 匿名统计 switches (which have defaults) are at
+        // the end of the 答题来源 page instead of a page each.
+        if (seen <= 0) return since.indices.filter {
+            it != 0 && it != AUTO_PAGE && it != TELEMETRY_PAGE && (it != DISCLAIMER_PAGE || needDisclaimer)
+        } to false
+        return since.indices.filter { i ->
+            if (i == DISCLAIMER_PAGE) needDisclaimer else i != 0 && i != since.lastIndex && since[i] > seen
+        } to true
+    }
+
+    fun plan(ctx: Context): Pair<List<Int>, Boolean> {
+        val p = prefs(ctx)
+        // Guides finished before the disclaimer had its own version: that was this text.
+        if (!p.contains("disclaimer") && p.getInt("onboarding", 0) >= 1) p.edit().putInt("disclaimer", 1).apply()
+        return plan(p.getInt("onboarding", 0), p.getInt("disclaimer", 0))
+    }
+
+    fun finish(ctx: Context) =
+        prefs(ctx).edit().putInt("onboarding", VERSION).putInt("disclaimer", DISCLAIMER_VERSION).apply()
+
+    fun reopen(ctx: Context) = prefs(ctx).edit().putInt("onboarding", 0).apply()
+}
 
 fun hasNotificationPermission(ctx: Context) = Build.VERSION.SDK_INT < 33 ||
     ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -97,7 +138,8 @@ fun AppRoot(splash: Boolean) {
     val ctx = LocalContext.current
     val c = X.colors
     val m = X.motion
-    var onboarded by remember { mutableStateOf(prefs(ctx).getInt("onboarding", 0) >= ONBOARDING_VERSION) }
+    var guide by remember { mutableStateOf(Guide.plan(ctx)) }
+    val onboarded = guide.first.isEmpty()
     var loadError by remember { mutableStateOf("") }
     var attempt by remember { mutableIntStateOf(0) }
     var phase by remember {
@@ -140,14 +182,14 @@ fun AppRoot(splash: Boolean) {
                 val brandHidden = phase != SplashPhase.Done
                 PageSwitch(target = onboarded, index = { if (it) 1 else 0 }) { done ->
                     if (!done) {
-                        OnboardingScreen(brandHidden, onDone = {
-                            prefs(ctx).edit().putInt("onboarding", ONBOARDING_VERSION).apply()
-                            onboarded = true
+                        OnboardingScreen(brandHidden, order = guide.first, newOnly = guide.second, onDone = {
+                            Guide.finish(ctx)
+                            guide = Guide.plan(ctx)
                         })
                     } else {
                         MainShell(brandHidden, reopenGuide = {
-                            prefs(ctx).edit().putInt("onboarding", 0).apply()
-                            onboarded = false
+                            Guide.reopen(ctx)
+                            guide = Guide.plan(ctx)
                         })
                     }
                 }

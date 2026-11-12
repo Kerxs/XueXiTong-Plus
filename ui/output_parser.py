@@ -36,6 +36,9 @@ ACTIVITY_MARKERS = {
     "当前章节:": "chapter",
     "开始任务:": "task_started",
     "任务完成:": "task_finished",
+    # study_video() ends every task with one of the three (api/base.py)
+    "任务待确认:": "task_pending",     # watched to the end, 学习通 has not confirmed it yet
+    "任务未完成:": "task_failed",      # error / 403 / captcha: the chapter is tried again
 }
 
 
@@ -48,7 +51,7 @@ class LogEvent:
 
 @dataclass
 class ActivityEvent:
-    kind: str  # course | chapter | task_started | task_finished
+    kind: str  # course | chapter | task_started | task_finished | task_pending | task_failed
     value: str
 
 
@@ -66,6 +69,7 @@ class VideoPreviewEvent:
     title: str
     valid: bool = True
     sources: list = field(default_factory=list)   # every usable address, best first (source = sources[0])
+    message: str = ""                             # what to show when there is no picture (live streams)
 
 
 @dataclass
@@ -83,6 +87,8 @@ class ManualTaskEvent:
     chapter: str
     kind: str
     name: str
+    resolved: bool = False     # the task was done after all: remove the reminder
+    checking: bool = False     # may need the user; the run is looking again (no popup yet)
 
 
 @dataclass
@@ -210,7 +216,8 @@ class OutputParser:
             if data is None:
                 return []
             return [ManualTaskEvent(str(data.get("course", "")), str(data.get("chapter", "")),
-                                    str(data.get("kind", "其他内容")), str(data.get("name", "")))]
+                                    str(data.get("kind", "其他内容")), str(data.get("name", "")),
+                                    bool(data.get("resolved", False)), bool(data.get("checking", False)))]
 
         if line.startswith(VIDEO_PREVIEW_PREFIX):
             data = _parse_json(line.removeprefix(VIDEO_PREVIEW_PREFIX))
@@ -221,7 +228,7 @@ class OutputParser:
             if source and source not in sources:
                 sources.insert(0, source)
             return [VideoPreviewEvent(source or (sources[0] if sources else ""), str(data.get("title", "") or "学习通视频"),
-                                      sources=sources)]
+                                      sources=sources, message=str(data.get("message", "") or "")[:80])]
 
         if line.startswith(WORK_PREVIEW_PREFIX):
             data = _parse_json(line.removeprefix(WORK_PREVIEW_PREFIX))

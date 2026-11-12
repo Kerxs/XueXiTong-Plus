@@ -87,7 +87,12 @@ ApplicationWindow {
             Qt.callLater(() => window.toggleMaximize(false))
         showGuide = !controller.onboardingDone
         controller.updater.checkOnStartup()
+        window.cornerRadius = controller.roundCorners(window, !window.maximized)
     }
+    // Rounded window corners (Windows 11 does not round a frameless window by itself); square
+    // while the window fills the screen. 0 on systems without rounded windows.
+    property int cornerRadius: 0
+    onMaximizedChanged: window.cornerRadius = controller.roundCorners(window, !window.maximized)
 
     function openSettings() { window.page = 1 }
 
@@ -190,7 +195,7 @@ ApplicationWindow {
         anchors.top: parent.top
         height: window.titleHeight
         // Continues the navigation pane on the left, the page background on the right.
-        Rectangle { width: 208; height: parent.height; color: Theme.pane; Behavior on color { ColorAnimation { duration: Theme.slow } } }
+        Rectangle { width: 208; height: parent.height; color: Theme.pane; visible: !window.showGuide; Behavior on color { ColorAnimation { duration: Theme.slow } } }
         DragHandler {
             target: null
             onActiveChanged: if (active) {
@@ -225,6 +230,7 @@ ApplicationWindow {
         anchors.fill: parent
         visible: !window.maximized
         color: "transparent"
+        radius: window.cornerRadius          // follows the rounded window edge
         border.width: 1
         border.color: Theme.borderStrong
     }
@@ -329,6 +335,14 @@ ApplicationWindow {
             // First start: the guide covers the window, so the logo lands on the welcome page's
             // icon and title instead of the nav-pane brand behind it.
             const onGuide = window.showGuide
+            if (onGuide && !guide.welcomeOnScreen) {
+                // The guide is up but its welcome page is not (only new pages are shown): there is
+                // no icon to land on, and the nav brand is behind the guide. No flight — the logo
+                // used to land on the hidden welcome page's spot, on top of the page shown.
+                brandRow.opacity = 1         // what landing would have done: the real brand shows
+                introDone = true
+                return
+            }
             iconTarget = onGuide ? guide.welcomeIconItem : brandIcon
             titleSource = onGuide ? guide.welcomeTitleItem : brandTitle
             fromX = cx - width / 2
@@ -353,9 +367,27 @@ ApplicationWindow {
             introTitles.landed = 0
             introTitles.opacity = 1
             introTitles.pieces = pieces
+            // The flight waits for the window's first frames: they carry the one-off work of a new
+            // window (textures, glyphs — 90 ms and more), and a flight started in them stutters.
+            warmup.frames = 0
+            warmup.enabled = true
+            warmupLimit.restart()
+        }
+        function launch() {
+            if (!warmup.enabled) return
+            warmup.enabled = false
+            warmupLimit.stop()
             flyAnim.start()
             for (let i = 0; i < pieceRep.count; ++i) pieceRep.itemAt(i).go()
         }
+        Connections {
+            id: warmup
+            target: window
+            enabled: false
+            property int frames: 0
+            function onFrameSwapped() { if (++frames >= 4) introLogo.launch() }
+        }
+        Timer { id: warmupLimit; interval: 250; onTriggered: introLogo.launch() }
 
         ParallelAnimation {
             id: flyAnim
@@ -367,8 +399,10 @@ ApplicationWindow {
             }
         }
     }
-    // The title copy, in pieces: native text whose font size animates (sharp and identical when
-    // it lands). Arrival order: the icon (560 ms), then 学, 习, 通, P, L, U, S one by one.
+    // The title copy, in pieces. Each piece is laid out once at the splash size and only scaled
+    // while it flies: animating the font size instead re-laid-out and re-drew seven texts on every
+    // frame (11–16 ms a frame — 60 fps at best on a 240 Hz screen). Arrival order: the icon
+    // (560 ms), then 学, 习, 通, P, L, U, S one by one; the real title then cross-fades in.
     Item {
         id: introTitles
         z: 91
@@ -425,6 +459,8 @@ ApplicationWindow {
                 font.family: introLogo.titleSource.font.family
                 font.weight: introLogo.titleSource.font.weight
                 font.pixelSize: introTitles.fromSize
+                renderType: Text.QtRendering      // scales smoothly (native text would shimmer)
+                transformOrigin: Item.TopLeft
                 x: introTitles.fromX + modelData.fromOffset
                 y: introTitles.fromY
                 onProgChanged: {
@@ -433,7 +469,7 @@ ApplicationWindow {
                     const sx = introTitles.fromX + modelData.fromOffset
                     x = sx + (title.x + modelData.toOffset - sx) * prog
                     y = introTitles.fromY + (title.y - introTitles.fromY) * prog
-                    font.pixelSize = introTitles.fromSize + (introTitles.toSize - introTitles.fromSize) * prog
+                    scale = 1 + (introTitles.toSize / introTitles.fromSize - 1) * prog
                 }
                 function go() { pieceFly.start(); pieceFade.start() }
                 SequentialAnimation {
@@ -454,7 +490,7 @@ ApplicationWindow {
         if (visible && splashIntro && !introLogo.introDone && !flyAnim.running) {
             // Wait one frame so the window is laid out before the flight starts.
             introLogo.x = -10000
-            Qt.callLater(introLogo.start)
+            Qt.callLater(introLogo.start)     // places the logo; the flight starts a few frames later
         }
     }
 
@@ -581,11 +617,14 @@ ApplicationWindow {
                                             width: 7; height: 7; radius: 4
                                             color: window.accountConfigured ? Theme.accent : Theme.warning
                                             Layout.rightMargin: 12
-                                            SequentialAnimation on scale {
-                                                running: index === 1 && !window.accountConfigured && Theme.loopMotion
-                                                loops: Animation.Infinite
-                                                NumberAnimation { to: 1.5; duration: 700; easing.type: Easing.InOutSine }
-                                                NumberAnimation { to: 1.0; duration: 700; easing.type: Easing.InOutSine }
+                                            id: attentionDot
+                                            Pulse {
+                                                target: attentionDot
+                                                prop: "scale"
+                                                from: 1.0
+                                                to: 1.5
+                                                period: 1400
+                                                active: index === 1 && !window.accountConfigured && Theme.loopMotion
                                             }
                                         }
                                     }
@@ -780,6 +819,9 @@ ApplicationWindow {
         title: "任务进程需要确认"
         acceptText: "继续"
         rejectText: "不继续"
+        // The task waits for this answer: after a minute it goes on by itself (the default answer).
+        countdown: 60
+        timeoutAccepts: true
         onAccepted: controller.answerPrompt(true)
         onRejected: controller.answerPrompt(false)
     }
@@ -812,7 +854,9 @@ ApplicationWindow {
         }
         function onManualPopupRequested() {
             if (!manualDialog.visible && !guide.visible) manualDialog.open()
+            else manualDialog.remaining = manualDialog.countdown     // a new item: count again
         }
+        function onManualResolved() { manualDialog.close() }       // everything sorted itself out
     }
 
     // Content the program does not do (documents, reading, surveys …), shown when no push
@@ -823,6 +867,9 @@ ApplicationWindow {
         width: 480
         acceptText: "去设置推送"
         rejectText: "知道了"
+        // Only a reminder — the run goes on behind it. It closes itself; the items stay in the log
+        // and in the summary at the end of the run.
+        countdown: 60
         message: {
             const items = controller.manualTasks
             let text = "下面的内容程序无法自动完成，需要你到学习通手动完成：\n"
@@ -831,7 +878,8 @@ ApplicationWindow {
                 text += "\n• " + t.kind + (t.name ? "「" + t.name + "」" : "") + " — " + t.chapter
             }
             if (items.length > 8) text += "\n… 共 " + items.length + " 项（完整列表见运行日志）"
-            return text + "\n\n设置推送服务后，会改为推送提醒，不再弹窗。"
+            return text + "\n\n任务仍在继续运行。程序会继续尝试，能自动完成的会从这里消失；"
+                + "这个提示到时间会自动关闭。\n设置推送服务后，会改为推送提醒，不再弹窗。"
         }
         onAccepted: window.openSettings()
     }

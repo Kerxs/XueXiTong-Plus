@@ -38,6 +38,17 @@ def online(timeout: float = 5.0) -> bool:
     return False
 
 
+def reset_connections() -> None:
+    """Forget the connections that were open before an outage or a network change: they are dead,
+    and each would otherwise cost a timeout before it is replaced."""
+    try:
+        from api.base import SessionManager
+
+        SessionManager.reset_connections()
+    except Exception:  # noqa: BLE001 - never in the way of the task
+        pass
+
+
 def wait_for_network(sleep=time.sleep, check=online, max_interval: float = 30.0) -> float:
     """Block until the server is reachable; returns the seconds waited (0 if it already is).
 
@@ -59,6 +70,7 @@ def wait_for_network(sleep=time.sleep, check=online, max_interval: float = 30.0)
             if check():
                 waited = time.monotonic() - started
                 logger.info(f"网络已恢复（中断约 {waited:.0f} 秒），继续任务")
+                reset_connections()
                 return waited
             # A line every few minutes: the user sees it is still waiting, and the desktop app's
             # hang check (no output for a long time) does not mistake an outage for a hang.

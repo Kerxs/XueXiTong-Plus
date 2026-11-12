@@ -10,7 +10,11 @@ Rectangle {
     id: root
     property bool suspended: false
     property bool revealing: false
-    readonly property bool showWeb: controller.videoActive && !suspended && !revealing
+    // "" : the selected video (single view). Otherwise this view is one tile of the grid and shows
+    // the video with this task name.
+    property string slotTitle: ""
+    readonly property bool tile: slotTitle !== ""
+    readonly property bool showWeb: (tile || controller.videoActive) && !suspended && !revealing
 
     color: "#05080f"
     radius: Theme.radius
@@ -31,7 +35,9 @@ Rectangle {
         // data: URL navigation, which does not reliably play the video.
         // The page opens at the task's current position (a fresh web view after switching
         // pages or closing a dialog would otherwise restart the video from 0).
-        if (controller.videoPageUrl !== "")
+        if (root.tile)
+            view.url = controller.videoPageFor(root.slotTitle)
+        else if (controller.videoPageUrl !== "")
             view.url = controller.videoPageAtPosition()
         else
             view.loadHtml(controller.videoHtml, controller.videoBaseUrl)
@@ -64,14 +70,20 @@ Rectangle {
     Connections {
         target: controller
         function onVideoProgressChanged() {
-            if (webLoader.item && controller.videoActive && controller.videoPosition >= 0)
+            if (!root.tile && webLoader.item && controller.videoActive && controller.videoPosition >= 0)
                 webLoader.item.runJavaScript("window.cxSync && cxSync(" + controller.videoPosition + ")")
+        }
+        function onVideoTick(title, position) {
+            if (root.tile && title === root.slotTitle && webLoader.item && position >= 0)
+                webLoader.item.runJavaScript("window.cxSync && cxSync(" + position + ")")
         }
     }
 
     Connections {
         target: controller
         function onVideoChanged() {
+            if (root.tile)
+                return                  // a tile keeps its own video; the grid rebuilds when the list changes
             if (controller.videoActive && Theme.motion) {
                 root.revealing = true
                 revealTimer.restart()
@@ -108,11 +120,12 @@ Rectangle {
                 GradientStop { position: 1.0; color: "transparent" }
             }
             opacity: 0.6
-            SequentialAnimation on opacity {
-                running: root.visible && !root.showWeb && Theme.loopMotion
-                loops: Animation.Infinite
-                NumberAnimation { to: 0.15; duration: 1800; easing.type: Easing.InOutSine }
-                NumberAnimation { to: 0.6; duration: 1800; easing.type: Easing.InOutSine }
+            Pulse {
+                target: glow
+                from: 0.6
+                to: 0.15
+                period: 3600
+                active: root.visible && !root.showWeb && Theme.loopMotion
             }
         }
 
@@ -128,7 +141,7 @@ Rectangle {
             }
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: root.suspended ? "预览已暂停显示"
+                text: root.suspended ? "弹窗关闭后继续显示预览（任务仍在运行）"
                     : root.revealing ? "正在载入视频…"
                     : (controller.videoMessage !== "" ? controller.videoMessage : "等待视频任务开始")
                 color: "#d7e0ee"

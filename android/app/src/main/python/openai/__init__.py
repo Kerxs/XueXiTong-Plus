@@ -1,6 +1,7 @@
-"""Minimal stand-in for the ``openai`` package on Android.
+"""Minimal stand-in for the ``openai`` package: on Android, and in the packaged Windows app.
 
-The real package needs pydantic-core and jiter (Rust extensions without Android builds).
+The real package needs pydantic-core and jiter (Rust extensions without Android builds, and
+about 10 MB of the Windows package for one request type).
 api/answer.py only uses ``OpenAI(base_url, api_key, http_client)``,
 ``client.chat.completions.create(...)`` and the error classes below, so this module
 implements exactly that over httpx, with the same names and attributes.
@@ -8,6 +9,7 @@ implements exactly that over httpx, with the same names and attributes.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -114,7 +116,9 @@ class _Chat:
 
 class OpenAI:
     def __init__(self, *, api_key: str | None = None, base_url: str | None = None,
-                 http_client: httpx.Client | None = None, timeout: float = 600.0, **_: Any):
+                 http_client: httpx.Client | None = None, timeout: float = 600.0,
+                 max_retries: int = 2, **_: Any):
+        self.max_retries = max(0, int(max_retries))
         self.api_key = api_key or ""
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
         self._http = http_client or httpx.Client()
@@ -122,6 +126,20 @@ class OpenAI:
         self.chat = _Chat(self)
 
     def _post(self, path: str, body: dict, timeout: float | None) -> Any:
+        """Like the SDK: a dropped connection, a timeout, 408 / 409 / 429 and 5xx are tried again
+        (max_retries times, waiting 0.5 s, 1 s, 2 s … up to 8 s)."""
+        for attempt in range(self.max_retries + 1):
+            try:
+                return self._post_once(path, body, timeout)
+            except APIStatusError as exc:
+                if attempt >= self.max_retries or not (exc.status_code in (408, 409, 429) or exc.status_code >= 500):
+                    raise
+            except APIConnectionError:
+                if attempt >= self.max_retries:
+                    raise
+            time.sleep(min(8.0, 0.5 * 2 ** attempt))
+
+    def _post_once(self, path: str, body: dict, timeout: float | None) -> Any:
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         try:
             response = self._http.post(self.base_url + path, json=body, headers=headers,

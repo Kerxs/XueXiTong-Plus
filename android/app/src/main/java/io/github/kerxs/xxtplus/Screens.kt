@@ -236,12 +236,24 @@ private fun StepIndicator(count: Int, step: Int) {
  * phone: they default to 本机通知, and the notification permission is part of 权限设置.
  */
 @Composable
-fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
+fun OnboardingScreen(brandHidden: Boolean, order: List<Int> = (0..6).toList(), newOnly: Boolean = false, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val c = X.colors
     val scope = rememberCoroutineScope()
-    val steps = listOf("欢迎", "免责声明", "账号", "自动完成", "答题来源", "权限设置")
-    var step by rememberSaveable { mutableIntStateOf(0) }
+    val steps = listOf("欢迎", "欢迎与声明", "账号", "自动完成", "答题来源", "匿名统计", "权限设置")
+    // Users from before 1.3.0 have "false" stored for the statistics that they never chose (it was
+    // the default): the first time the guide is shown the switch is on; after that it is theirs.
+    LaunchedEffect(Unit) {
+        val prefs = ctx.getSharedPreferences("app", android.content.Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("telemetry_asked", false)) {
+            prefs.edit().putBoolean("telemetry_asked", true).apply()
+            SettingsModel.values["common.telemetry"] = "true"
+        }
+    }
+    // `order`: the pages shown this time (Guide.plan); `pos` walks through it, `step` is the page.
+    val pages = order.ifEmpty { (0..6).toList() }
+    var pos by rememberSaveable { mutableIntStateOf(0) }
+    val step = pages[pos.coerceIn(0, pages.lastIndex)]
     var typed by rememberSaveable { mutableStateOf("") }
     var problem by remember { mutableStateOf("") }
 
@@ -262,8 +274,9 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
     fun next() = scope.launch {
         SettingsModel.save(ctx)
         when {
-            step < steps.size - 1 -> step++
-            KeepAlive.missing(ctx).isNotEmpty() -> unfinished = KeepAlive.missing(ctx)
+            pos < pages.lastIndex -> pos++
+            // the keep-alive reminder belongs to the permissions page; the short "what is new" guide skips it
+            step == steps.lastIndex && KeepAlive.missing(ctx).isNotEmpty() -> unfinished = KeepAlive.missing(ctx)
             else -> onDone()
         }
     }
@@ -292,11 +305,13 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
         Spacer(Modifier.height(14.dp))
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
         Spacer(Modifier.height(18.dp))
-        StepIndicator(steps.size, step)
+        StepIndicator(pages.size, pos)
         Spacer(Modifier.height(20.dp))
-        PageSwitch(step, { it }) { s -> PageHeader(steps[s], "开始引导 · 第 ${s + 1} / ${steps.size} 步") }
+        PageSwitch(step, { pages.indexOf(it) }) { s ->
+            PageHeader(steps[s], (if (newOnly) "有新内容" else "开始引导") + " · 第 ${pages.indexOf(s) + 1} / ${pages.size} 步")
+        }
         Spacer(Modifier.height(Dimens.gap))
-        PageSwitch(step, { it }, Modifier.weight(1f).fillMaxWidth()) { s ->
+        PageSwitch(step, { pages.indexOf(it) }, Modifier.weight(1f).fillMaxWidth()) { s ->
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Dimens.gap)) {
                 when (s) {
                     0 -> XCard(Modifier.fillMaxWidth(), title = "欢迎使用学习通 PLUS 手机版") {
@@ -309,6 +324,8 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
                             color = c.muted, fontSize = 12.sp)
                     }
                     1 -> {
+                        Text("欢迎使用学习通 PLUS 手机版。先读一遍下面的声明并照着输入一遍，然后填账号、选答题来源、完成权限设置，就可以开始了。",
+                            color = c.muted, fontSize = 13.sp)
                         XCard(Modifier.fillMaxWidth(), padding = 14.dp) {
                             SelectionContainer { Text(DISCLAIMER, color = c.text, fontSize = 13.sp) }
                         }
@@ -339,6 +356,28 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
                         SettingsModel.group("tiku")?.let { SettingsGroupCard(it) }
                         SettingsModel.group("answer")?.let { SettingsGroupCard(it, appearDelay = 60) }
                         if (problem.isNotEmpty()) Consequence(problem)
+                        if (!newOnly) {
+                            // What used to be two pages of their own: both have defaults, shown to look over.
+                            SettingsModel.group("auto")?.let { SettingsGroupCard(it, appearDelay = 120) }
+                            XCard(Modifier.fillMaxWidth(), title = "匿名统计", subtitle = "默认开启，只有数字，不含账号、课程、题目和日志") {
+                                SwitchRow("发送匿名统计", "之后可以在“设置 → 数据与隐私”里随时关闭",
+                                    SettingsModel.values["common.telemetry"] != "false") {
+                                    SettingsModel.values["common.telemetry"] = if (it) "true" else "false"
+                                }
+                            }
+                        }
+                    }
+                    Guide.TELEMETRY_PAGE -> {
+                        XCard(Modifier.fillMaxWidth(), title = "匿名统计", subtitle = "默认开启，可以现在就关掉") {
+                            Text("为了知道哪些功能容易出问题、该先修什么，学习通 PLUS 会统计匿名的使用数据。之后也能在“设置 → 数据与隐私”里随时更改。",
+                                color = c.muted, fontSize = 13.sp)
+                            Text("只统计数字：各类任务成功 / 失败的次数和耗时、验证码和网络错误的次数、启动时间和内存占用、版本和系统版本；程序出错时再加上错误类型和出错的代码位置。", color = c.text, fontSize = 13.sp)
+                            Text("不收集账号、密码、cookies、课程和题目内容、答案、AI 对话、文件和日志。", color = c.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            SwitchRow("发送匿名统计", "关闭后立即停止，并删除本机还没发送的数据",
+                                SettingsModel.values["common.telemetry"] != "false") {
+                                SettingsModel.values["common.telemetry"] = if (it) "true" else "false"   // saved by 下一步 / 完成
+                            }
+                        }
                     }
                     else -> {
                         // Honest expectations before the first run (same notice on the desktop).
@@ -356,10 +395,17 @@ fun OnboardingScreen(brandHidden: Boolean, onDone: () -> Unit) {
         }
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (step > 0) XButton("上一步", { step-- })
+            if (pos > 0) XButton("上一步", { pos-- })
             Spacer(Modifier.weight(1f))
-            if (step == 2 || step == 4) XButton("稍后配置", { next() }, kind = Kind.Ghost)
-            XButton(if (step == steps.size - 1) "开始使用" else "下一步", { next() }, kind = Kind.Primary, enabled = canNext)
+            // What is new can be skipped at once (a changed disclaimer still has to be written out).
+            if (newOnly && step != Guide.DISCLAIMER_PAGE) XButton("跳过", { onDone() }, kind = Kind.Ghost)
+            else if (step == 2 || step == 4) XButton("稍后配置", { next() }, kind = Kind.Ghost)
+            else if (step == 3) XButton("跳过", { next() }, kind = Kind.Ghost)
+            XButton(when {
+                pos < pages.lastIndex -> "下一步"
+                newOnly -> "完成"
+                else -> "开始使用"
+            }, { next() }, kind = Kind.Primary, enabled = canNext)
         }
     }
 }

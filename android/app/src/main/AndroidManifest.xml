@@ -56,5 +56,12 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Long-running user-started course study task that must keep reporting progress while the screen is off" />
         </service>
+
+        <!-- Starts a run again after the system ended the task process (alarm, see Watchdog). In the
+             task's process, so it can tell whether the task is still running. -->
+        <receiver
+            android:name=".Watchdog"
+            android:exported="false"
+            android:process=":worker" />
     </application>
 </manifest>

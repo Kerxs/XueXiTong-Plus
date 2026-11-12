@@ -1,0 +1,24 @@
+# 学习通 PLUS 匿名统计后台。部署步骤见 README.md。
+name = "xxtplus-telemetry"
+main = "worker.js"
+compatibility_date = "2026-06-01"
+
+# 不记录请求日志（请求日志里会有 IP）
+[observability]
+enabled = false
+
+[vars]
+RETENTION_DAYS = "90"
+
+# 每天 03:17 UTC 删除超过保留期的数据
+[triggers]
+crons = ["17 3 * * *"]
+
+# `wrangler d1 create xxtplus-telemetry` 会输出 database_id，填到这里
+[[d1_databases]]
+binding = "DB"
+database_name = "xxtplus-telemetry"
+database_id = "754430fa-bcf7-43ae-b819-959f740afad5"
+
+# 管理密码不要写在这个文件里：
+#   wrangler secret put ADMIN_TOKEN

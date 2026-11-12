@@ -97,8 +97,12 @@ object Updater {
         state = "downloading"; progress = 0f; error = ""
         try {
             val file = withContext(Dispatchers.IO) {
+                // Only this project's release downloads on github.com, and a plain file name.
+                if (!rel.url.startsWith("https://github.com/$REPO/releases/download/")) {
+                    throw IllegalStateException("更新地址不是本项目的发布下载地址，已取消")
+                }
                 val dir = File(ctx.cacheDir, "update").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
-                val target = File(dir, rel.name.ifEmpty { "update.apk" })
+                val target = File(dir, File(rel.name.ifEmpty { "update.apk" }).name)
                 // Written as .part and renamed only after the digest matches (desktop updater does the
                 // same): an interrupted download never looks like a finished APK.
                 val out = File(dir, target.name + ".part")
@@ -127,7 +131,12 @@ object Updater {
                 } finally { conn.disconnect() }
                 val hex = digest.digest().joinToString("") { "%02x".format(it) }
                 val expected = rel.digest.removePrefix("sha256:").lowercase()
-                if (expected.isNotEmpty() && expected != hex) {
+                // No checksum, no install: an APK is about to be handed to the system installer.
+                if (expected.isEmpty()) {
+                    out.delete()
+                    throw IllegalStateException("发布信息里没有校验值，不自动安装。请到发布页手动下载")
+                }
+                if (expected != hex) {
                     out.delete()
                     throw IllegalStateException("安装包校验失败（SHA-256 不一致），已删除，请稍后重试")
                 }

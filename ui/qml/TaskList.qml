@@ -34,6 +34,10 @@ Card {
             required property int percent
             required property string detail
             required property bool done
+            required property string state
+            readonly property color tint: state === "done" ? Theme.success
+                : state === "pending" ? Theme.warning
+                : (state === "failed" || state === "stopped") ? Theme.muted : Theme.accent
             width: ListView.view.width - 8
             height: 46
             radius: Theme.radius
@@ -53,7 +57,7 @@ Card {
                         text: done ? "" : ""
                         font.family: Theme.iconFont
                         font.pixelSize: 11
-                        color: done ? Theme.success : Theme.accent
+                        color: tint
                     }
                     Text {
                         Layout.fillWidth: true
@@ -78,7 +82,7 @@ Card {
                         width: parent.width * Math.max(0, Math.min(100, percent)) / 100
                         height: parent.height
                         radius: 2
-                        color: done ? Theme.success : Theme.accent
+                        color: tint
                         Behavior on color { ColorAnimation { duration: Theme.slow } }
                         Behavior on width { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
                     }

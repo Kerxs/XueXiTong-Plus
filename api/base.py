@@ -23,6 +23,7 @@ from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception
 from tqdm import tqdm
 
 from api import pause
+from api.exceptions import CaptchaBlocked
 from api.answer import Tiku, TikuManual
 from api.answer_check import cut
 from api.cipher import AESCipher
@@ -35,6 +36,12 @@ from api.decode import (
     decode_course_folder,
     decode_questions_info,
 )
+
+
+def _mask_name(name: str) -> str:
+    """"张三丰" -> "张**": enough to see which account is in use, not the real name in logs people share."""
+    name = str(name or "").strip()
+    return name[:1] + "*" * max(1, len(name) - 1) if name else ""
 
 
 def _emit_work_preview(payload: dict) -> None:
@@ -98,6 +105,29 @@ class SessionManager:
             cls._instance = super().__new__(cls)
         return cls._instance
 
+    @staticmethod
+    def _counted(request):
+        """Requests, failures, timeouts and time spent, for the anonymous statistics (numbers only)."""
+        from api import telemetry
+
+        @functools.wraps(request)
+        def counted(*args, **kwargs):
+            started = time.monotonic()
+            try:
+                return request(*args, **kwargs)
+            except requests.Timeout:
+                telemetry.count("net.timeout")
+                telemetry.count("net.fail")
+                raise
+            except requests.RequestException:
+                telemetry.count("net.fail")
+                raise
+            finally:
+                telemetry.count("net.requests")
+                telemetry.timing("net.cx", time.monotonic() - started)
+
+        return counted
+
     def __init__(self):
         # get_instance() calls cls() every time and Python runs __init__ on each call: build the
         # session once. (Rebuilding it on every request threw away the connection pool, re-read
@@ -113,7 +143,7 @@ class SessionManager:
         self._session.mount("https://", HTTPAdapter(max_retries=retry))
         self._session.mount("http://", HTTPAdapter(max_retries=retry))
         # (connect, read): mobile networks need more than the old 5 s to connect.
-        self._session.request = functools.partial(self._session.request, timeout=(10, 20))
+        self._session.request = self._counted(functools.partial(self._session.request, timeout=(10, 20)))
         # For debug purposes
         # self._session.verify=False
         self._session.headers.clear()
@@ -128,6 +158,21 @@ class SessionManager:
     def get_session(cls) -> requests.Session:
         instance = cls.get_instance()
         return instance._session
+
+    @classmethod
+    def reset_connections(cls) -> None:
+        """Drop the pooled connections (cookies and headers stay). After the network went away or
+        changed (Wi-Fi <-> mobile data, the phone waking from its power-saving sleep) the pooled
+        sockets are dead: without this each one is found out by a timeout and a retry of its own."""
+        instance = cls._instance
+        session = getattr(instance, "_session", None) if instance is not None else None
+        if session is None:
+            return
+        for adapter in list(session.adapters.values()):
+            try:
+                adapter.close()          # the adapter opens fresh connections on its next request
+            except Exception:  # noqa: BLE001
+                pass
 
     @classmethod
     def update_cookies(cls):
@@ -513,7 +558,7 @@ class Chaoxing:
             try:
                 realname = self.get_name()
                 if realname:
-                    logger.info(f"当前登录用户: {realname}")
+                    logger.info(f"当前登录用户: {_mask_name(realname)}")
             except Exception as e:
                 logger.debug(f"获取当前登录用户名失败: {e}")
             return {"status": True, "msg": "登录成功"}
@@ -544,7 +589,7 @@ class Chaoxing:
             try:
                 realname = self.get_name()
                 if realname:
-                    logger.info(f"当前登录用户: {realname}")
+                    logger.info(f"当前登录用户: {_mask_name(realname)}")
             except Exception as e:
                 logger.debug(f"获取当前登录用户名失败: {e}")
             return {"status": True, "msg": "登录成功"}
@@ -974,11 +1019,30 @@ class Chaoxing:
         logger.warning("视频进度响应的 isPassed 值无效 (jobid={}): {!r}", job.get("jobid"), value)
         return False, 0
 
+    @staticmethod
+    def _same_card(card: dict, job: dict) -> bool:
+        """Whether a card of the 任务点 page is the job's. A live-stream card often has no top-level
+        ``jobid`` (the job then carries the card's id; the real one is ``property._jobid``), so those
+        are compared too, and the stream's own id."""
+        prop = card.get("property") if isinstance(card.get("property"), dict) else {}
+        job_prop = job.get("property") if isinstance(job.get("property"), dict) else {}
+        mine = {str(v) for v in (job.get("jobid"), job_prop.get("_jobid"), job_prop.get("jobid")) if v}
+        theirs = {str(v) for v in (card.get("jobid"), prop.get("_jobid"), prop.get("jobid"), card.get("id")) if v}
+        if mine & theirs:
+            return True
+        live = job.get("liveId") or job_prop.get("liveId")
+        return bool(live) and str(prop.get("liveId", "")) == str(live)
+
     def _card_passed(self, course: dict, job: dict) -> bool:
         """Read the one 任务点 card the job is on and say whether 学习通 shows it as passed."""
+        return self._card_state(course, job) is True
+
+    def _card_state(self, course: dict, job: dict):
+        """True: 学习通 shows the task point as passed. False: it is there and not passed.
+        None: could not tell (the page was not read, or the card was not found on it)."""
         num, knowledge = job.get("card_num"), job.get("knowledgeid")
         if num is None or not knowledge:
-            return False
+            return None
         try:
             resp = SessionManager.get_session().get(
                 "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards",
@@ -989,8 +1053,11 @@ class Chaoxing:
             cards = json.loads("{" + found[0] + "}").get("attachments", []) if found else []
         except Exception as exc:
             logger.debug(f"读取任务点卡片失败: {exc}")
-            return False
-        return any(c.get("jobid") == job.get("jobid") and c.get("isPassed") for c in cards)
+            return None
+        mine = [c for c in cards if isinstance(c, dict) and self._same_card(c, job)]
+        if not mine:
+            return None
+        return any(bool(c.get("isPassed")) for c in mine)
 
     @staticmethod
     def _emit_video_preview(video_info: dict, job: dict) -> None:
@@ -1043,8 +1110,8 @@ class Chaoxing:
             return None
 
         if resp.status_code != 200:
-            logger.debug("刷新视频状态返回码异常: {}" % resp.status_code)
-            logger.debug(resp.text)
+            logger.debug("刷新视频状态返回码异常: {}", resp.status_code)
+            logger.debug(resp.text[:200])
             return None
 
         try:
@@ -1083,6 +1150,67 @@ class Chaoxing:
 
     def study_video(self, _course, _job, _job_info, _speed: float = 1.0,
                     _type: Literal["Video", "Audio"] = "Video") -> StudyResult:
+        """Watch one video / audio. However it ends, exactly one result line follows that the app reads
+        to close the task's progress row: 任务完成 / 任务待确认 / 任务未完成 (ui/output_parser)."""
+        name = _job.get("name") or _job.get("jobid", "未知任务")
+        outcome = "任务未完成"
+        try:
+            result = self._study_video(_course, _job, _job_info, _speed, _type)
+            if result == StudyResult.SUCCESS:
+                outcome = "任务待确认" if _job.pop("_unconfirmed", False) else "任务完成"
+            return result
+        finally:
+            logger.info("{}: {}", outcome, name)
+
+    REPORT_RETRIES = 4              # progress reports that may fail in a row before the video counts as failed
+    END_CARD_WAITS = (3, 6, 12)     # seconds before each read-only look at the card (21 s in all)
+    END_FINAL_WAIT = 5
+
+    @staticmethod
+    def _wait_paused(seconds: float) -> None:
+        """Sleep; a pause that starts meanwhile is waited out too."""
+        time.sleep(max(0.0, seconds))
+        pause.wait_if_paused()
+
+    def _confirm_end(self, _session, _course, _job, _job_info, _dtoken, duration, _type, headers) -> bool:
+        """The end was reported once and not confirmed. 学习通's own player reports the end once; sending it
+        again every few seconds is what drew the captcha (60 of 65 in the logs came right after the third
+        end report). So: read the task point's card (read-only) after 3, 6 and 12 s, then report the end
+        ONE more time (>= 20 s after the first) and read the card once more."""
+        started = time.time()
+        for attempt, wait in enumerate(self.END_CARD_WAITS, 1):
+            logger.info("已到结尾，等待平台确认（第 {} 次查看任务点）", attempt)
+            self._wait_paused(wait)
+            if self._card_passed(_course, _job):
+                logger.info("平台已确认完成（任务点显示完成，用时 {:.0f} 秒）: {}", time.time() - started,
+                            _job.get("name", ""))
+                return True
+        try:
+            passed, _ = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, duration,
+                                                _type, headers=headers, _isdrag=4)
+        except CaptchaBlocked:
+            logger.warning("结尾确认时遇到验证码，不再重复上报: {}", _job.get("name", ""))
+            return False
+        if not passed:
+            self._wait_paused(self.END_FINAL_WAIT)
+            passed = self._card_passed(_course, _job)
+        if passed:
+            logger.info("平台已确认完成（用时 {:.0f} 秒）: {}", time.time() - started, _job.get("name", ""))
+        return passed
+
+    @staticmethod
+    def _unconfirmed(_job) -> StudyResult:
+        """Watched to the end, not confirmed yet: not a failure (the rest of the chapter goes on; the
+        catch-up pass at the end of the run looks again)."""
+        from api import telemetry
+
+        telemetry.count("video.unconfirmed")
+        _job["_unconfirmed"] = True
+        logger.warning("视频已看到结尾，平台暂未确认完成，补漏时再确认: {}", _job.get("name", _job.get("jobid", "未知任务")))
+        return StudyResult.SUCCESS
+
+    def _study_video(self, _course, _job, _job_info, _speed: float = 1.0,
+                     _type: Literal["Video", "Audio"] = "Video") -> StudyResult:
         _session = SessionManager.get_session()
         headers = gc.VIDEO_HEADERS if _type == "Video" else gc.AUDIO_HEADERS
 
@@ -1118,13 +1246,6 @@ class Chaoxing:
 
         forbidden_retry = 0
         max_forbidden_retry = 2
-        # 视频到末尾后等平台确认完成：最多上报 8 次、每次间隔约 3 秒（约 25 秒），
-        # 不再每秒上报 20 次（平台一直不确认时要白等约一分钟）
-        completion_report_attempts = 0
-        # 到结尾后再报“已看完”的间隔（秒）：2、3、5、8，共约 20 秒；第 2、4 次之后直接读卡片确认
-        completion_waits = (2, 3, 5, 8)
-        completion_started = 0.0
-
         # 开始时按平台自己记录的进度上报（不再一开始就报“已看完”：第 0 秒报进度 = 总时长的
         # “瞬间完成”尝试与真实观看不符）。已完成的任务点在解析课程卡片时就跳过了（isPassed），
         # 这里只有平台记录本身已到要求时才会直接确认完成。
@@ -1138,10 +1259,12 @@ class Chaoxing:
             logger.error("首次视频进度上报失败，状态码: {}", state)
             return StudyResult.ERROR
         if play_time >= duration - 5:
-            # 先快速确认一次（按结尾上报 + 读卡片），确认不了再从头看
-            passed, _ = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, duration,
-                                                _type, headers=headers, _isdrag=4)
-            if passed or self._card_passed(_course, _job):
+            # 先快速确认一次：先只读任务点卡片，不行再报一次结尾；确认不了再从头看
+            passed = self._card_passed(_course, _job)
+            if not passed:
+                passed, _ = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, duration,
+                                                    _type, headers=headers, _isdrag=4)
+            if passed:
                 logger.info("平台确认已完成（按已记录的进度）: {}", _job['name'])
                 return StudyResult.SUCCESS
         if play_time >= duration - 5:
@@ -1160,6 +1283,7 @@ class Chaoxing:
         last_log_time = play_time
 
         pbar = None
+        report_failures = 0
         try:
             while not passed:
                 # Sometimes the last request needs to be sent several times to complete the task
@@ -1168,9 +1292,23 @@ class Chaoxing:
                     # isdrag like 学习通's own player: 3 started (the opening report), 0 while playing,
                     # 4 ended. The end used to be reported as 3 ("just started") and the platform often
                     # did not confirm it ("视频已到末尾，但平台连续8次未确认完成").
-                    passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration,
-                                                            int(play_time), _type, headers=headers,
-                                                            _isdrag=4 if int(play_time) >= duration else 0)
+                    at_end = int(play_time) >= duration
+                    try:
+                        passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken,
+                                                                duration, int(play_time), _type, headers=headers,
+                                                                _isdrag=4 if at_end else 0)
+                    except CaptchaBlocked:
+                        if not at_end:
+                            raise           # in the middle of the video: cool down, log in again, start over
+                        # The video has been watched to the end: starting the chapter over would only watch
+                        # it again. Look at the card once; otherwise it waits for the catch-up pass.
+                        logger.warning("结尾上报遇到验证码，不重新开始本章: {}", _job.get("name", ""))
+                        self._wait_paused(self.END_FINAL_WAIT)
+                        if self._card_passed(_course, _job):
+                            logger.info("平台已确认完成（任务点显示完成）: {}", _job.get("name", ""))
+                            passed = True
+                            break
+                        return self._unconfirmed(_job)
 
                     if state == 403:
                         if forbidden_retry >= max_forbidden_retry:
@@ -1207,34 +1345,35 @@ class Chaoxing:
                             logger.error("会话恢复失败，刷新后的元数据缺少必要字段 (dtoken, duration)")
                             return StudyResult.ERROR
 
+                    elif not passed and state == 0:
+                        # The report did not get through (connection reset, no network). On a phone in
+                        # the background this is routine: the system cuts idle connections and the
+                        # network for a while. It used to end the video as failed, and the chapter
+                        # started over. Now: wait for the network, or try again a few times.
+                        from api import net
+
+                        report_failures += 1
+                        if not net.online():
+                            net.wait_for_network()
+                            report_failures = 0
+                        elif report_failures >= self.REPORT_RETRIES:
+                            logger.error("视频进度连续 {} 次上报失败: {}", report_failures, _job.get("name", ""))
+                            return StudyResult.ERROR
+                        else:
+                            logger.warning("视频进度上报没有成功，稍后重试（第 {} 次）", report_failures)
+                            self._wait_paused(3 * report_failures)
+                        last_iter = time.time()      # the wait is not watching time
+                        continue
+
                     elif not passed and state != 200:
                         return StudyResult.ERROR
+                    report_failures = 0
 
-                    if not passed and int(play_time) >= duration:
-                        if not completion_report_attempts:
-                            completion_started = time.time()
-                        completion_report_attempts += 1
-                        if completion_report_attempts in (2, 4) and self._card_passed(_course, _job):
-                            logger.info("平台已确认完成（任务点卡片显示完成，用时 {:.0f} 秒）: {}",
-                                        time.time() - completion_started, _job.get("name", ""))
+                    if not passed and at_end:
+                        if self._confirm_end(_session, _course, _job, _job_info, _dtoken, duration, _type, headers):
                             passed = True
                             break
-                        if completion_report_attempts > len(completion_waits):
-                            # 不算失败：这一章其余任务照常完成；运行末尾补漏时会再确认一次
-                            from api import telemetry
-
-                            telemetry.count("video.unconfirmed")
-                            logger.warning("视频已看到结尾，平台暂未确认完成，补漏时再确认: {}",
-                                           _job.get("name", _job.get("jobid", "未知任务")))
-                            return StudyResult.SUCCESS
-                        logger.info("已到结尾，等待平台确认（第 {} 次）", completion_report_attempts)
-                        # 下一次确认前等一会儿（循环本身还会再睡 THRESHOLD 秒）
-                        time.sleep(max(0.0, completion_waits[completion_report_attempts - 1] - gc.THRESHOLD))
-                    else:
-                        if passed and completion_report_attempts:
-                            logger.info("平台已确认完成（用时 {:.0f} 秒）: {}", time.time() - completion_started,
-                                        _job.get("name", ""))
-                        completion_report_attempts = 0
+                        return self._unconfirmed(_job)
 
                     wait_time = int(random.uniform(30, 90))
                     last_log_time = play_time
@@ -1275,8 +1414,7 @@ class Chaoxing:
         finally:
             pbar = self._close_pbar_safe(pbar)
 
-        logger.info("任务完成: {}", _job['name'])
-        return StudyResult.SUCCESS
+        return StudyResult.SUCCESS      # study_video() writes the "任务完成" line
 
     def study_document(self, _course, _job) -> StudyResult:
         """
@@ -1509,14 +1647,17 @@ class Chaoxing:
                 if res_json["status"]:
                     logger.info(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题成功 -> {res_json["msg"]}')
                     _emit_work_preview({"phase": "submitted" if questions["pyFlag"] == "" else "saved",
+                                        "title": _job.get("name") or _job.get("jobid", ""),
                                         "msg": res_json["msg"]})
                 else:
                     logger.error(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题失败 -> {res_json["msg"]}')
-                    _emit_work_preview({"phase": "failed", "msg": res_json["msg"]})
+                    _emit_work_preview({"phase": "failed", "title": _job.get("name") or _job.get("jobid", ""),
+                                        "msg": res_json["msg"]})
                     return StudyResult.ERROR
             else:
                 logger.error(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题失败 -> {res.text}')
-                _emit_work_preview({"phase": "failed", "msg": f"HTTP {res.status_code}"})
+                _emit_work_preview({"phase": "failed", "title": _job.get("name") or _job.get("jobid", ""),
+                                    "msg": f"HTTP {res.status_code}"})
                 return StudyResult.ERROR
 
             # 5. 若只是保存未提交，无法判断成绩，保持原有行为

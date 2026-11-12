@@ -91,7 +91,7 @@ class AIModesTest(unittest.TestCase):
         ai._make_client = lambda *a, **k: client
         ai._wait_for_interval = lambda: None
         ai._completion_kwargs = lambda **kw: kw
-        ai._build_work_feedback_text = lambda: ""
+        ai._build_work_feedback_text = lambda *a: ""
         return ai, sent
 
     q = {"type": "completion", "title": '斜边长是多少？<img src="https://p.ananas.chaoxing.com/t.png">', "options": ""}

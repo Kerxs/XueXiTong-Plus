@@ -35,7 +35,7 @@ BASIC_FIELDS = [
      "hint": "多个用英文逗号隔开；留空则开始时选择"},
     # 倍速已失效：不再提供设置，保存时固定写 1（main.py 也会强制 1 倍速）
     {"id": "common.speed", "label": "视频倍速", "type": "hidden", "default": "1"},
-    {"id": "common.jobs", "label": "同时进行的章节", "type": "number", "default": "1",
+    {"id": "common.jobs", "label": "同时进行的章节", "type": "number", "default": "2",
      "min": 1, "max": 8, "step": 1, "decimals": 0, "suffix": "个"},
     {"id": "common.retry_interval", "label": "重试等待", "type": "number", "default": "5",
      "min": 1, "max": 120, "step": 1, "decimals": 0, "suffix": "秒"},
@@ -165,8 +165,8 @@ def settings_schema() -> str:
                 f = {**f, "label": _LABELS[f["type"]]}
             if f["id"] == "notification.provider":
                 # 本机通知 = Android's own notification shade (api.notification.Local).
-                f = {**f, "options": [{"value": "Local", "label": "本机通知"}, *f["options"]],
-                     "hint": "本机通知：直接显示在手机通知栏，不需要第三方服务"}
+                f = {**f, "options": [{"value": "Local", "label": "系统通知（默认）"}, *f["options"]],
+                     "hint": "系统通知：直接显示在手机通知栏，不需要第三方服务"}
             elif f["section"] == "notification" and f.get("show"):
                 show = f["show"] if isinstance(f["show"], list) else [f["show"]]
                 f = {**f, "show": [*show, {"key": "notification.provider", "ne": "Local"}]}
@@ -175,6 +175,9 @@ def settings_schema() -> str:
     return json.dumps({"basic": BASIC_FIELDS, "groups": groups, "aiProviders": cloudmodels.public_providers(),
                        "aiRegions": cloudmodels.REGIONS},
                       ensure_ascii=False)
+
+
+SYSTEM_PUSH_KEY = "system_default_applied"
 
 
 def load_settings(config_path: str, template_path: str) -> str:
@@ -186,10 +189,14 @@ def load_settings(config_path: str, template_path: str) -> str:
         section, key = f["id"].split(".", 1)
         raw = config.get(section, key, fallback=f["default"]).strip()
         values[f["id"]] = "" if raw.lower() in _PLACEHOLDERS else raw
-    # The template's provider is ServerChan with no address, i.e. not set up: on the phone
-    # the natural default is the system notification.
-    if values.get("notification.provider") == "ServerChan" and not values.get("notification.url"):
-        values["notification.provider"] = "Local"
+    # On the phone the default is the system notification (系统通知): it needs no third-party
+    # service. It is applied once to a setup where no push can reach the user — nothing chosen, or
+    # a service without its address (the template's ServerChan). After that (SYSTEM_PUSH_KEY in the
+    # config) the choice is the user's, including 不推送.
+    if not config.has_option("notification", SYSTEM_PUSH_KEY):
+        provider = values.get("notification.provider", "")
+        if provider != "Local" and (not provider or not values.get("notification.url")):
+            values["notification.provider"] = "Local"
     return json.dumps(values, ensure_ascii=False)
 
 
@@ -206,6 +213,9 @@ def save_settings(config_path: str, template_path: str, values_json: str) -> Non
         if not config.has_section(section):
             config.add_section(section)
         config[section][key] = str(values.get(f["id"], f["default"])).strip()
+    if not config.has_section("notification"):
+        config.add_section("notification")
+    config["notification"][SYSTEM_PUSH_KEY] = "true"       # the default was applied; see load_settings
     from core import secret
 
     secret.write_config(config, config_path)   # account, password, keys encrypted
@@ -268,6 +278,13 @@ def list_models(endpoint: str, key: str, proxy: str) -> str:
 
 
 # ---------------------------------------------------------------- running
+
+def network_changed() -> None:
+    """The phone's network came back or changed (TaskService): the open connections are dead."""
+    from api import net
+
+    net.reset_connections()
+
 
 def answer(text: str) -> None:
     _answers.put(text)
@@ -335,6 +352,16 @@ def run(config_path: str, data_dir: str, pause_file: str, sink) -> int:
         pass
     os.environ["CHAOXING_PREVIEW_REFRESH_FILE"] = refresh
     os.environ["PYTHONUNBUFFERED"] = "1"
+    # for the anonymous statistics (api/telemetry.py): the app version and "Android 14", nothing else
+    try:
+        from android.os import Build
+        from com.chaquo.python import Python
+
+        os.environ["XXTPLUS_OS"] = f"Android {Build.VERSION.RELEASE}"
+        app = Python.getPlatform().getApplication()
+        os.environ["XXTPLUS_VERSION"] = str(app.getPackageManager().getPackageInfo(app.getPackageName(), 0).versionName)
+    except Exception:  # noqa: BLE001 - not on a phone (tests), or the lookup failed: left unknown
+        pass
 
     stream = _ParsedStream(OutputParser(), sink)
     sys.stdout = sys.stderr = stream  # before importing main: api/logger.py captures sys.stderr

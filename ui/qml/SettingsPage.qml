@@ -10,6 +10,36 @@ Item {
 
     onVisibleChanged: if (visible) controller.refreshDataStats()
 
+    // Categories on the left (heading → entries), the picked entry's options on the right.
+    property string section: "account"
+    function pick(id) {
+        if (id === section) return
+        section = id
+        scroll.contentItem.contentY = 0
+        if (Theme.motion) sectionIn.restart()
+    }
+    readonly property var advancedIds: controller.advancedGroups.map(g => g.id)
+    function groupIcon(id) {
+        const g = controller.advancedGroups.find(x => x.id === id)
+        return g ? g.icon : ""
+    }
+    function groupTitle(id) {
+        const g = controller.advancedGroups.find(x => x.id === id)
+        return g ? g.title : id
+    }
+    readonly property var menu: [
+        { heading: "账号与运行" },
+        { id: "account", title: "账号", icon: "" },
+        { id: "run", title: "运行", icon: "" },
+        { id: "count", title: "章节学习次数", icon: "" },
+        { heading: "任务" }
+    ].concat(advancedIds.map(id => ({ id: id, title: groupTitle(id), icon: groupIcon(id) }))).concat([
+        { heading: "应用" },
+        { id: "look", title: "外观与动画", icon: "" },
+        { id: "data", title: "数据与隐私", icon: "" },
+        { id: "about", title: "关于", icon: "" }
+    ])
+
     // A labelled row: title + optional description on the left, a control on the right.
     component SettingRow: RowLayout {
         id: row
@@ -46,7 +76,7 @@ Item {
         anchors.top: parent.top
         anchors.bottom: parent.bottom
         anchors.horizontalCenter: parent.horizontalCenter
-        width: Math.min(parent.width, 880)
+        width: Math.min(parent.width, 1080)
         spacing: Theme.gap
 
         ColumnLayout {
@@ -63,9 +93,110 @@ Item {
                 function onVisibleChanged() { if (page.visible && Theme.motion) titleIn.restart() }
             }
             Text { text: "设置"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 22; font.weight: Font.DemiBold }
-            Text { text: "账号、运行、外观、数据与隐私。基本参数在运行面板中调整。"; color: Theme.muted; font.family: Theme.uiFont; font.pixelSize: 12 }
+            Text {
+                // Changes are written a moment after they are made: there is no 保存 button.
+                text: controller.running ? "任务运行中，部分设置已锁定"
+                    : controller.dirty ? "正在保存…" : "修改后自动保存"
+                color: Theme.muted; font.family: Theme.uiFont; font.pixelSize: 12
+            }
         }
 
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: Theme.gap
+
+        // ---------- left: categories ----------
+        ScrollView {
+            Layout.preferredWidth: 216
+            Layout.fillHeight: true
+            contentWidth: availableWidth
+            clip: true
+            Item {
+                width: 216
+                implicitHeight: menuColumn.implicitHeight
+            // One highlight that slides from the entry picked before to the one picked now. (Each
+            // entry used to fade its own background: two animations at once, old out and new in.)
+            Rectangle {
+                id: menuMark
+                readonly property int index: page.menu.findIndex(m => m.id === page.section)
+                // (re-read when the entries are created: itemAt() does not notify)
+                readonly property Item entry: { menuRep.count; return index >= 0 ? menuRep.itemAt(index) : null }
+                visible: entry !== null
+                x: 0
+                width: parent.width
+                y: entry ? entry.y : 0
+                height: entry ? entry.height : 40
+                radius: 20
+                color: Theme.accentSoft
+                Behavior on y { enabled: menuMark.placed; NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
+                Behavior on color { ColorAnimation { duration: Theme.slow } }
+                property bool placed: false          // no slide from the top when the page is first laid out
+                Timer { interval: 300; running: true; onTriggered: menuMark.placed = true }
+            }
+            ColumnLayout {
+                id: menuColumn
+                width: 216
+                spacing: 2
+                Repeater {
+                    id: menuRep
+                    model: page.menu
+                    delegate: Item {
+                        id: menuEntry
+                        required property var modelData
+                        readonly property bool heading: modelData.heading !== undefined
+                        readonly property bool current: !heading && page.section === modelData.id
+                        Layout.fillWidth: true
+                        implicitHeight: heading ? 34 : 40
+                        Text {
+                            visible: parent.heading
+                            anchors.left: parent.left
+                            anchors.leftMargin: 12
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 6
+                            text: parent.heading ? modelData.heading : ""
+                            color: Theme.accent
+                            font.family: Theme.uiFont
+                            font.pixelSize: 12
+                            font.weight: Font.DemiBold
+                        }
+                        Rectangle {
+                            visible: !parent.heading
+                            anchors.fill: parent
+                            radius: 20
+                            color: !parent.current && entryHover.hovered ? Theme.surfaceAlt : "transparent"
+                            Behavior on color { enabled: !menuEntry.current; ColorAnimation { duration: Theme.fast } }
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 14
+                                anchors.rightMargin: 12
+                                spacing: 12
+                                Text {
+                                    text: modelData.icon || ""
+                                    font.family: Theme.iconFont
+                                    font.pixelSize: 15
+                                    color: parent.parent.parent.current ? Theme.accent : Theme.muted
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.title || ""
+                                    color: Theme.text
+                                    font.family: Theme.uiFont
+                                    font.pixelSize: 13
+                                    font.weight: parent.parent.parent.current ? Font.DemiBold : Font.Normal
+                                    elide: Text.ElideRight
+                                }
+                            }
+                            HoverHandler { id: entryHover; cursorShape: Qt.PointingHandCursor }
+                            TapHandler { onTapped: page.pick(modelData.id) }
+                        }
+                    }
+                }
+            }
+            }
+        }
+
+        // ---------- right: the picked entry ----------
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -77,11 +208,20 @@ Item {
             clip: true
 
             ColumnLayout {
+                id: sectionBody
                 width: scroll.availableWidth
                 spacing: Theme.gap
+                // The picked entry's content fades and lifts in (one animation per pick).
+                transform: Translate { id: sectionShift; y: 0 }
+                ParallelAnimation {
+                    id: sectionIn
+                    NumberAnimation { target: sectionBody; property: "opacity"; from: 0; to: 1; duration: Theme.normal; easing.type: Easing.OutCubic }
+                    NumberAnimation { target: sectionShift; property: "y"; from: 12; to: 0; duration: Theme.normal; easing.type: Easing.OutCubic }
+                }
 
                 // ---------- 账号 ----------
                 Card {
+                    visible: page.section === "account"
                     Layout.fillWidth: true
                     title: "账号"
                     subtitle: "账号信息加密保存在本机（只有当前 Windows 用户能解密）"
@@ -141,6 +281,7 @@ Item {
 
                 // ---------- 运行 ----------
                 Card {
+                    visible: page.section === "run"
                     Layout.fillWidth: true
                     title: "运行"
                     icon: ""
@@ -185,6 +326,7 @@ Item {
 
                 // ---------- 章节学习次数 ----------
                 Card {
+                    visible: page.section === "count"
                     Layout.fillWidth: true
                     title: "章节学习次数"
                     subtitle: "完成所选课程的任务点后，继续轮询章节增加学习次数"
@@ -215,12 +357,21 @@ Item {
 
                 // ---------- 高级选项 (config.ini) ----------
                 AdvancedOptions {
+                    // one group of config.ini options at a time, picked in the list on the left
+                    visible: page.advancedIds.indexOf(page.section) >= 0
                     Layout.fillWidth: true
-                    appearDelay: 140
+                    only: visible ? [page.section] : [page.advancedIds[0]]
+                    stacked: true
+                    embedded: true          // the group's own title is enough: no second "高级选项" heading
+                    title: ""
+                    subtitle: ""
+                    icon: ""
+                    appearDelay: 0
                 }
 
                 // ---------- 外观与动画 ----------
                 Card {
+                    visible: page.section === "look"
                     Layout.fillWidth: true
                     title: "外观与动画"
                     icon: ""
@@ -260,6 +411,7 @@ Item {
 
                 // ---------- 数据与隐私 ----------
                 Card {
+                    visible: page.section === "data"
                     Layout.fillWidth: true
                     title: "数据与隐私"
                     subtitle: "配置、cookies 和日志位于 %APPDATA%\\ChaoxingDesktop"
@@ -283,7 +435,7 @@ Item {
                                 text: "重新载入"
                                 flat: false
                                 enabled: !controller.running
-                                onClicked: controller.dirty ? reloadConfirm.open() : controller.reloadConfig()
+                                onClicked: controller.reloadConfig()
                             }
                         }
                     }
@@ -310,10 +462,11 @@ Item {
                     Divider {}
                     SettingRow {
                         label: "匿名使用统计"
-                        hint: "只记录各类任务的成功 / 失败次数和错误类型，不含账号、课程、题目和日志；保存在本机，默认关闭"
+                        hint: "只统计数字（各类任务成功 / 失败次数和耗时、错误类型、启动时间和内存、版本），不含账号、课程、题目和日志。"
+                            + (controller.telemetryUploads ? "关闭后立即停止上传，并删除本机还没发送的数据" : "这个版本只保存在本机；关闭后删除本机统计")
                         AppSwitch {
-                            checked: ["true", "1", "yes", "on"].indexOf(String(controller.advancedValues["common.telemetry"] || "").toLowerCase()) >= 0
-                            onToggled: { controller.setAdvanced("common.telemetry", checked ? "true" : "false"); controller.saveConfig() }
+                            checked: controller.telemetryEnabled
+                            onToggled: controller.telemetryEnabled = checked
                         }
                     }
                     Divider {}
@@ -329,6 +482,7 @@ Item {
 
                 // ---------- 关于 ----------
                 Card {
+                    visible: page.section === "about"
                     Layout.fillWidth: true
                     title: "关于"
                     icon: ""
@@ -422,36 +576,6 @@ Item {
             }
         }
 
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: 52
-            radius: Theme.radiusLarge
-            color: Theme.surface
-            border.color: controller.dirty ? Theme.accent : Theme.border
-            Behavior on border.color { ColorAnimation { duration: Theme.normal } }
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 16
-                anchors.rightMargin: 10
-                Text {
-                    Layout.fillWidth: true
-                    text: controller.running ? "任务运行中，部分设置已锁定" : (controller.dirty ? "有未保存的修改" : "所有设置已保存到本机")
-                    color: controller.dirty ? Theme.accent : Theme.muted
-                    font.family: Theme.uiFont
-                    font.pixelSize: 12
-                }
-                AppButton {
-                    text: "撤销修改"
-                    enabled: controller.dirty && !controller.running
-                    onClicked: controller.revertConfig()
-                }
-                AppButton {
-                    text: "保存"
-                    kind: "primary"
-                    enabled: controller.dirty && !controller.running
-                    onClicked: controller.saveConfig()
-                }
-            }
         }
     }
 

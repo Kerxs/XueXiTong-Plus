@@ -66,6 +66,8 @@ class ProcessJobQuizTest(unittest.TestCase):
         with mock.patch.object(manual, "print"), mock.patch.object(manual.logger, "warning"):
             result = main.process_job(cx, {"title": "高数", "courseId": "1"}, {"type": "workid", "jobid": "w", "name": "测验"},
                                       {}, 1.0, {"id": "p", "title": "1.1"})
+            self.assertEqual(manual.items(), [])        # only "正在确认" so far
+            manual.confirm_all()
         self.assertEqual(result, StudyResult.SUCCESS)
         self.assertEqual(manual.items()[0]["kind"], "章节检测（没有读到题目）")
 

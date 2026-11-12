@@ -39,6 +39,11 @@ def is_newer(remote: str, local: str) -> bool:
     return parse_version(remote) > parse_version(local)
 
 
+def trusted_download(url: str) -> bool:
+    """Only this project's release downloads on github.com, over https."""
+    return str(url).startswith(f"https://github.com/{REPO}/releases/download/")
+
+
 def pick_asset(release: dict) -> dict | None:
     for asset in release.get("assets") or []:
         if ASSET_RE.match(asset.get("name", "")):
@@ -74,6 +79,9 @@ class _DownloadWorker(QThread):
         self.cancelled = False
 
     def run(self) -> None:
+        if not trusted_download(self.url) or not ASSET_RE.match(self.name) or Path(self.name).name != self.name:
+            self.failed.emit("更新地址不是本项目的发布下载地址，已取消")
+            return
         target = Path(tempfile.gettempdir()) / "xxtplus-update" / self.name
         partial = target.with_suffix(".part")
         try:
@@ -95,8 +103,11 @@ class _DownloadWorker(QThread):
                         self.progressed.emit(min(1.0, got / total))
             if self.size and got != self.size:
                 raise RuntimeError(f"下载不完整（{got} / {self.size} 字节）")
-            # GitHub publishes "sha256:<hex>" for release assets; check it when present.
-            if self.digest.startswith("sha256:") and sha.hexdigest() != self.digest.split(":", 1)[1].lower():
+            # GitHub publishes "sha256:<hex>" for every release asset. No checksum, no install:
+            # a setup program is about to be run.
+            if not self.digest.startswith("sha256:"):
+                raise RuntimeError("发布信息里没有校验值，不自动安装。请到发布页手动下载")
+            if sha.hexdigest() != self.digest.split(":", 1)[1].lower():
                 raise RuntimeError("文件校验失败（SHA-256 不一致），已丢弃下载")
             partial.replace(target)
             self.done.emit(str(target))

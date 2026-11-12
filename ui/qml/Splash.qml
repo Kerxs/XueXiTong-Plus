@@ -80,7 +80,10 @@ Window {
                     color: "#000000"
                     anchors.verticalCenter: parent.verticalCenter
                     SequentialAnimation on opacity {
-                        running: true
+                        // Only while the splash is on screen. It used to run for ever: after the
+                        // splash closed, the hidden window kept redrawing several hundred times a
+                        // second (nothing limits a window that is not shown), 2-24% of a core.
+                        running: splash.visible
                         loops: Animation.Infinite
                         NumberAnimation { to: 0; duration: 420 }
                         NumberAnimation { to: 1; duration: 420 }

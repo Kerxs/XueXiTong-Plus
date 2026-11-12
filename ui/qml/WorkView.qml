@@ -116,11 +116,14 @@ Rectangle {
             font.family: Theme.iconFont
             font.pixelSize: 28
             color: Theme.faint
-            SequentialAnimation on opacity {
-                running: !root.hasWork && Theme.motion && root.visible
-                loops: Animation.Infinite
-                NumberAnimation { to: 0.35; duration: 1400; easing.type: Easing.InOutSine }
-                NumberAnimation { to: 1.0; duration: 1400; easing.type: Easing.InOutSine }
+            id: emptyIcon
+            Pulse {
+                target: emptyIcon
+                from: 1.0
+                to: 0.35
+                period: 2800
+                // loopMotion (not motion): it also rests while the window is minimized or in the tray
+                active: !root.hasWork && Theme.loopMotion && root.visible
             }
         }
         Text {

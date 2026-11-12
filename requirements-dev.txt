@@ -1,0 +1,9 @@
+# 开发和检查用的工具，不随发行包分发。
+#   python -m unittest discover -s tests          自动测试（也可以用 pytest 运行）
+#   python -m ruff check api core ui installer packaging main.py gui.py worker.py --select S,F,E9,B
+#   python -m pip_audit -r <构建环境的 pip freeze 输出> --no-deps --disable-pip
+#   cd server/telemetry && node --test test/      统计后台的测试（Node 22.5+）
+-r requirements-desktop.txt
+pytest>=8
+ruff>=0.6
+pip-audit>=2.7

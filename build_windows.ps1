@@ -68,12 +68,6 @@ $versionMatch = Select-String -LiteralPath (Join-Path $projectRoot "ui\controlle
 $appVersion = if ($versionMatch) { $versionMatch.Matches[0].Groups[1].Value } else { "0.0.0" }
 $releaseZip = Join-Path $distRoot "XueXiTong-Plus-Windows-$appVersion.zip"
 Compress-Archive -LiteralPath $releaseDir -DestinationPath $releaseZip -CompressionLevel Optimal -Force
-# The installer carries the same files as an LZMA zip: about a quarter smaller than Deflate.
-# (The no-install zip above stays Deflate so Windows Explorer can open it.)
-$payloadZip = Join-Path $buildRoot "setup-payload.zip"
-& $pythonExe (Join-Path $projectRoot "packaging\make_payload.py") $releaseDir $payloadZip
-if ($LASTEXITCODE -ne 0) { throw "Installer payload build failed." }
-
 # Installer: our own Qt Quick setup program (installer\setup.py) with the release zip
 # appended to the end of the exe. zipfile finds the archive from the file's end.
 $setupWork = Join-Path $buildRoot "pyinstaller-setup"
@@ -82,6 +76,12 @@ Remove-Item -LiteralPath $setupWork, $setupDist -Recurse -Force -ErrorAction Sil
 & $pythonExe -m PyInstaller --noconfirm --clean --distpath $setupDist --workpath $setupWork `
     (Join-Path $projectRoot "packaging\setup.spec")
 if ($LASTEXITCODE -ne 0) { throw "Setup program build failed." }
+# The files to install, as one solid .tar.xz stream (installer\payload.py). Built after the setup
+# program: files it carries itself (its Qt and Python, listed in setup-manifest.json) are not
+# stored a second time. The no-install zip above stays a plain zip so Windows Explorer can open it.
+$payloadZip = Join-Path $buildRoot "setup-payload.bin"
+& $pythonExe (Join-Path $projectRoot "packaging\make_payload.py") $releaseDir $payloadZip (Join-Path $buildRoot "setup-manifest.json")
+if ($LASTEXITCODE -ne 0) { throw "Installer payload build failed." }
 Get-ChildItem -LiteralPath $distRoot -Filter "XueXiTong-Plus-Setup-*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
 $installer = Join-Path $distRoot "XueXiTong-Plus-Setup-$appVersion.exe"
 $out = [IO.File]::Open($installer, [IO.FileMode]::Create)

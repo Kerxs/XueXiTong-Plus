@@ -100,6 +100,8 @@ GROUPS: list[dict] = [
         "fields": [
             _f("common", "auto_documents", "switch", "课件 / 文档", "true",
                "章节里的课件、教案等打开一次，学习通即记为完成"),
+            _f("common", "auto_live", "switch", "直播", "true",
+               "按直播的时长逐分钟观看（1 倍速，一场直播要等它的时长那么久）；还没开始或没有回放的直播会提醒你"),
             _f("common", "auto_homework", "switch", "作业", "true",
                "每次运行都会查看每门课的“作业”栏目，未完成的用答题来源自动作答"),
             _f("common", "homework_submit", "switch", "作业自动提交", "true",
@@ -185,6 +187,9 @@ GROUPS: list[dict] = [
                "例如 deepseek-ai/DeepSeek-V3", show={"key": "tiku.provider", "has": ["SiliconFlow"]}),
             _f("tiku", "siliconflow_endpoint", "text", "接口地址", "https://api.siliconflow.cn/v1/chat/completions",
                show={"key": "tiku.provider", "has": ["SiliconFlow"]}),
+            _f("tiku", "ai_batch", "number", "合并提问", "5",
+               "同一份检测里几道题合成一次请求，请求次数和费用更少；设为 1 则每题单独问（含图片的题总是单独问）",
+               min=1, max=10, step=1, decimals=0, suffix="题", show={"key": "tiku.provider", "has": ["AI"]}),
             _f("tiku", "min_interval_seconds", "number", "大模型请求间隔", "3", "两次请求之间至少等待多久，0 表示不限制",
                min=0, max=120, step=1, decimals=0, suffix="秒",
                show={"key": "tiku.provider", "has": ["AI", "SiliconFlow"]}),
@@ -219,8 +224,8 @@ GROUPS: list[dict] = [
         "icon": "",
         "fields": [
             _f("notification", "provider", "choice", "推送服务", "", options=NOTIFY_PROVIDERS),
-            # 匿名使用统计（设置 → 数据与隐私 里的开关，api/telemetry.py），默认关闭
-            _f("common", "telemetry", "hidden", "匿名使用统计", "false"),
+            # 匿名使用统计（设置 → 数据与隐私 里的开关，api/telemetry.py），默认开启，引导里有说明
+            _f("common", "telemetry", "hidden", "匿名使用统计", "true"),
             _f("notification", "url", "secret", "推送地址", "",
                "服务提供的完整推送地址（含密钥），例如 Server酱的 https://sctapi.ftqq.com/<SendKey>.send",
                show={"key": "notification.provider", "ne": ""}),

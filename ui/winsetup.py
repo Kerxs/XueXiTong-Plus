@@ -84,11 +84,29 @@ def start_menu_shortcut() -> Path:
             / "Programs" / f"{APP_NAME}.lnk")
 
 
+def system_exe(name: str) -> str:
+    """Full path of one of Windows' own programs ("powershell", "tasklist", "cmd", "netstat").
+
+    Started by bare name, Windows looks in the folder of the running exe first — for the setup
+    program that is the Downloads folder, where a file someone else put there under the same name
+    would be run instead. A full path under %SystemRoot% leaves nothing to look up."""
+    root = Path(os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows") / "System32"
+    known = {
+        "powershell": root / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+        "cmd": root / "cmd.exe",
+        "tasklist": root / "tasklist.exe",
+        "netstat": root / "NETSTAT.EXE",
+        "ping": root / "PING.EXE",
+    }
+    path = known[name]
+    return str(path) if path.exists() or sys.platform != "win32" else name
+
+
 def _powershell(script: str) -> None:
     """Run a PowerShell snippet without a console window (UTF-16 encoded, so no quoting issues)."""
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+        [system_exe("powershell"), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
         check=True, creationflags=CREATE_NO_WINDOW, capture_output=True, timeout=60,
     )
 
@@ -214,7 +232,7 @@ def running_app_processes(install_dir: Path | None = None) -> list[str]:
     for image in (APP_EXE, WORKER_EXE):
         try:
             out = subprocess.run(
-                ["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
+                [system_exe("tasklist"), "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
                 capture_output=True, creationflags=CREATE_NO_WINDOW, timeout=15,
             ).stdout.decode("mbcs", errors="replace")
         except (OSError, subprocess.SubprocessError):
@@ -230,7 +248,11 @@ def schedule_folder_removal(folder: Path) -> None:
     """Delete `folder` a moment after this process exits (it may contain the running exe)."""
     # A plain command-line string: a list would get its inner quotes escaped as \" , which cmd
     # does not understand. cwd is moved out of the folder so it is not held open.
+    # A folder name cannot contain a double quote, but % would be expanded by cmd: refuse those
+    # (the folder is then simply left behind; the uninstaller says what to delete by hand).
+    if "%" in str(folder) or '"' in str(folder):
+        return
     subprocess.Popen(
-        f'cmd /d /c "ping 127.0.0.1 -n 3 >nul & rmdir /s /q "{folder}""',
+        f'"{system_exe("cmd")}" /d /c ""{system_exe("ping")}" 127.0.0.1 -n 3 >nul & rmdir /s /q "{folder}""',
         creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS, close_fds=True, cwd=str(Path(folder).parent),
     )

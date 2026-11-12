@@ -71,9 +71,11 @@ def is_microsoft_signed(path: Path) -> bool:
         "$s = Get-AuthenticodeSignature -LiteralPath $env:XXT_SIG_FILE; "
         "if ($s.Status -eq 'Valid' -and $s.SignerCertificate.Subject -match 'O=Microsoft Corporation') { 'ok' } else { 'bad' }"
     )
+    from ui import winsetup
+
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            [winsetup.system_exe("powershell"), "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True, text=True, timeout=60,
             env={**os.environ, "XXT_SIG_FILE": str(path)},
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

@@ -34,6 +34,7 @@ class TaskService : Service() {
         const val ACTION_STOP = "io.github.kerxs.xxtplus.STOP"
         const val ACTION_ANSWER = "io.github.kerxs.xxtplus.ANSWER"
         const val ACTION_SYNC = "io.github.kerxs.xxtplus.SYNC"
+        const val ACTION_REVIVE = "io.github.kerxs.xxtplus.REVIVE"      // Watchdog: the task is gone, start it again
         const val ACTION_EVENT = "io.github.kerxs.xxtplus.EVENT"
         const val EXTRA_TEXT = "text"
         const val EXTRA_ALERT = "alertOnFinish"
@@ -48,9 +49,16 @@ class TaskService : Service() {
         private const val HISTORY = 400
         // A run the system killed is started again (START_STICKY) at most this many times.
         private const val MAX_RESTARTS = 5
+        private const val RESTART_RESET_MS = 30 * 60 * 1000L
         // No output at all for this long while running (not paused, not waiting for the user):
         // the task is stuck; end this process so START_STICKY starts the run again.
         private const val HANG_MS = 20 * 60 * 1000L
+        // The wake lock is taken for this long and renewed every minute while the run goes on
+        // (it used to be taken once for 24 hours: a longer run lost it).
+        private const val WAKE_MS = 60 * 60 * 1000L
+
+        /** True in the :worker process while a task is running there (read by Watchdog). */
+        @Volatile var alive = false
 
         /** Present while a run is active; left behind when the system kills the :worker process. */
         fun runFile(ctx: Context) = java.io.File(ctx.filesDir, "run.json")
@@ -126,6 +134,7 @@ class TaskService : Service() {
             ACTION_STOP -> finish(stopped = true, code = 0)
             ACTION_ANSWER -> answer(intent.getStringExtra(EXTRA_TEXT) ?: "")
             ACTION_SYNC -> sync()
+            ACTION_REVIVE -> revive()
         }
         // While a run is active the system restarts this service after killing the process
         // (省电策略 / 清理后台), and the run continues: the platform keeps the watch progress.
@@ -134,10 +143,25 @@ class TaskService : Service() {
 
     private var restarts = 0
 
+    /** Watchdog found the run's file but no task (the system ended the process and did not restart
+     *  the service). Started with startForegroundService: the notification must be shown either way. */
+    private fun revive() {
+        runCatching { startForegroundCompat(buildNotification()) }
+        if (worker != null) return
+        if (pendingRun(this)) restartAfterKill()
+        if (worker == null) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
     private fun restartAfterKill() {
         val saved = runCatching { JSONObject(runFile(this).readText()) }.getOrNull()
         if (saved == null) { stopSelf(); return }
-        restarts = saved.optInt("restarts") + 1
+        // The count starts over after half an hour without trouble (like the desktop app): a long
+        // run that is ended a few times over many hours is not given up on.
+        val quiet = System.currentTimeMillis() - saved.optLong("at") > RESTART_RESET_MS
+        restarts = if (quiet) 1 else saved.optInt("restarts") + 1
         if (restarts > MAX_RESTARTS) {
             runFile(this).delete()
             alert("任务已停止", "任务进程被系统结束了 $MAX_RESTARTS 次。请在“权限设置”里允许后台运行后重新开始。")
@@ -179,7 +203,7 @@ class TaskService : Service() {
         val pm = getSystemService(PowerManager::class.java)
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "xxtplus:task").apply {
             setReferenceCounted(false)
-            acquire(24 * 60 * 60 * 1000L)
+            acquire(WAKE_MS)
         }
         @Suppress("DEPRECATION")
         wifiLock = runCatching {
@@ -188,12 +212,19 @@ class TaskService : Service() {
                 .apply { setReferenceCounted(false); acquire() }
         }.getOrNull()
         watchNetwork()
+        watchIdle()
+        Watchdog.schedule(this)
+        KeepAlive.backgroundNetworkHint(this).let { hint ->
+            if (hint.isNotEmpty()) record(JSONObject().put("type", "log").put("level", "WARNING")
+                .put("message", "后台联网可能会中断：$hint。").put("time", "").toString())
+        }
         lastEventAt = System.currentTimeMillis()
         waitingInput = false
         main.removeCallbacks(hangCheck)
         main.postDelayed(hangCheck, 60_000)
         record(stateJson(true))
         val sink = Sink()
+        alive = true
         worker = Thread({
             val code = try {
                 PythonBridge.module(this).callAttr(
@@ -226,12 +257,15 @@ class TaskService : Service() {
     private val hangCheck = object : Runnable {
         override fun run() {
             if (worker == null) return
+            runCatching { wakeLock?.acquire(WAKE_MS) }       // renewed: the run may last longer than one period
             val silent = System.currentTimeMillis() - lastEventAt
             if (!paused && !waitingInput && silent > HANG_MS) {
                 record(JSONObject().put("type", "log").put("level", "WARNING")
                     .put("message", "任务已经 ${silent / 60000} 分钟没有任何输出，可能卡住了，正在重新开始…")
                     .put("time", "").toString())
-                // run.json stays: the system restarts this service and the run continues.
+                // run.json stays: the system restarts this service and the run continues; where it
+                // does not, the watchdog alarm does a few seconds later.
+                Watchdog.schedule(this@TaskService, 5_000)
                 main.postDelayed({ Process.killProcess(Process.myPid()) }, 500)
                 return
             }
@@ -303,9 +337,11 @@ class TaskService : Service() {
     private fun finish(stopped: Boolean, code: Int) {
         PythonBridge.pauseFile(this).delete()
         runFile(this).delete()     // ended on purpose: nothing to restart
+        Watchdog.cancel(this)
         main.removeCallbacks(hangCheck)
         val was = worker != null
         worker = null
+        alive = false
         releaseLocks()
         record(JSONObject().put("type", "finished").put("stopped", stopped).put("code", code).toString())
         record(stateJson(false))
@@ -404,6 +440,46 @@ class TaskService : Service() {
             runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(cb) }
         }
         networkCallback = null
+        idleReceiver?.let { r -> runCatching { unregisterReceiver(r) } }
+        idleReceiver = null
+    }
+
+    /** The open connections are dead after an outage or a change of network: the task drops them
+     *  (api/net.reset_connections) instead of finding each one out by a timeout. */
+    private fun dropConnections() {
+        Thread({ runCatching { PythonBridge.module(this).callAttr("network_changed") } }, "xxtplus-net")
+            .apply { isDaemon = true; start() }
+    }
+
+    private var idleReceiver: android.content.BroadcastReceiver? = null
+
+    /** The phone's power-saving sleep (Doze): logged, so an outage in the run log can be told from a
+     *  real network problem; the connections are renewed when it ends. */
+    private fun watchIdle() {
+        if (idleReceiver != null) return
+        val pm = getSystemService(PowerManager::class.java)
+        val r = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent?) {
+                if (worker == null) return
+                if (pm.isDeviceIdleMode) {
+                    val exempt = KeepAlive.isIgnoringBatteryOptimizations(this@TaskService)
+                    record(JSONObject().put("type", "log").put("level", if (exempt) "INFO" else "WARNING")
+                        .put("message", if (exempt) "手机进入省电休眠，任务继续运行（已关闭电池优化）"
+                            else "手机进入省电休眠：没有关闭电池优化，网络会被系统断开，任务要等手机被唤醒才能继续。请到“设置 → 权限设置”关闭电池优化")
+                        .put("time", "").toString())
+                } else {
+                    record(JSONObject().put("type", "log").put("level", "INFO")
+                        .put("message", "手机结束省电休眠").put("time", "").toString())
+                    dropConnections()
+                }
+            }
+        }
+        val filter = android.content.IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
+        val ok = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) registerReceiver(r, filter, Context.RECEIVER_NOT_EXPORTED)
+            else registerReceiver(r, filter)
+        }.isSuccess
+        if (ok) idleReceiver = r
     }
 
     /** Logs network loss / return; the task itself waits for the network (api/net.py). */
@@ -411,22 +487,37 @@ class TaskService : Service() {
         if (networkCallback != null) return
         val cm = getSystemService(android.net.ConnectivityManager::class.java)
         var lost = false
+        var current: android.net.Network? = null
         val cb = object : android.net.ConnectivityManager.NetworkCallback() {
             override fun onLost(network: android.net.Network) {
                 main.post {
                     if (worker == null || lost) return@post
                     lost = true
+                    // Screen off + a known restriction: say what to change instead of only "网络已断开".
+                    val screenOff = !getSystemService(PowerManager::class.java).isInteractive
+                    val hint = if (screenOff) KeepAlive.backgroundNetworkHint(this@TaskService) else ""
                     record(JSONObject().put("type", "log").put("level", "WARNING")
-                        .put("message", "手机网络已断开，任务会在网络恢复后继续").put("time", "").toString())
+                        .put("message", "手机网络已断开，任务会在网络恢复后继续" + if (hint.isEmpty()) "" else "（$hint）")
+                        .put("time", "").toString())
                 }
             }
 
             override fun onAvailable(network: android.net.Network) {
                 main.post {
-                    if (worker == null || !lost) return@post
-                    lost = false
-                    record(JSONObject().put("type", "log").put("level", "INFO")
-                        .put("message", "手机网络已恢复").put("time", "").toString())
+                    val changed = current != null && current != network
+                    current = network
+                    if (worker == null) return@post
+                    if (lost) {
+                        lost = false
+                        record(JSONObject().put("type", "log").put("level", "INFO")
+                            .put("message", "手机网络已恢复").put("time", "").toString())
+                        dropConnections()
+                    } else if (changed) {
+                        // Wi-Fi <-> mobile data without a gap: the old connections are dead all the same
+                        record(JSONObject().put("type", "log").put("level", "INFO")
+                            .put("message", "手机切换了网络（Wi-Fi / 移动数据），已重新连接").put("time", "").toString())
+                        dropConnections()
+                    }
                 }
             }
         }

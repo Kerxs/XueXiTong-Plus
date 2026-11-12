@@ -128,6 +128,7 @@ class TaskModel(QAbstractListModel):
     PercentRole = Qt.ItemDataRole.UserRole + 2
     DetailRole = Qt.ItemDataRole.UserRole + 3
     DoneRole = Qt.ItemDataRole.UserRole + 4
+    StateRole = Qt.ItemDataRole.UserRole + 5      # running | done | pending | failed | stopped
 
     countChanged = Signal()
 
@@ -142,6 +143,7 @@ class TaskModel(QAbstractListModel):
             self.PercentRole: QByteArray(b"percent"),
             self.DetailRole: QByteArray(b"detail"),
             self.DoneRole: QByteArray(b"done"),
+            self.StateRole: QByteArray(b"state"),
         }
 
     def rowCount(self, parent=QModelIndex()) -> int:
@@ -157,6 +159,7 @@ class TaskModel(QAbstractListModel):
             self.PercentRole: item["percent"],
             self.DetailRole: item["detail"],
             self.DoneRole: item["done"],
+            self.StateRole: item["state"],
         }.get(role)
 
     count = Property(int, lambda self: len(self._items), notify=countChanged)
@@ -171,12 +174,26 @@ class TaskModel(QAbstractListModel):
         index = self.index(row)
         self.dataChanged.emit(index, index)
 
-    def upsert(self, name: str, percent: int | None = None, detail: str | None = None, done: bool = False) -> None:
+    STATE_TEXT = {"done": "已完成", "pending": "待确认", "failed": "未完成，稍后重试", "stopped": "已停止"}
+
+    def start(self, name: str) -> None:
+        """The task starts (again): a row left from an earlier try goes back to running."""
+        row = self._find(name)
+        if row >= 0:
+            self._items[row].update(done=False, state="running", percent=0)
+        self.upsert(name, detail="进行中")
+
+    def finish(self, name: str, state: str) -> None:
+        """The task ended: done | pending | failed. A row never stays "进行中" after its task ended."""
+        self.upsert(name, detail=self.STATE_TEXT[state], done=state == "done", state=state)
+
+    def upsert(self, name: str, percent: int | None = None, detail: str | None = None, done: bool = False,
+               state: str | None = None) -> None:
         row = self._find(name)
         if row < 0:
             # Newest first so the active task stays at the top of the list.
             self.beginInsertRows(QModelIndex(), 0, 0)
-            self._items.insert(0, {"name": name, "percent": 0, "detail": "", "done": False})
+            self._items.insert(0, {"name": name, "percent": 0, "detail": "", "done": False, "state": "running"})
             self.endInsertRows()
             row = 0
             if len(self._items) > self._limit:
@@ -186,20 +203,27 @@ class TaskModel(QAbstractListModel):
                 self.endRemoveRows()
             self.countChanged.emit()
         item = self._items[row]
+        if state is None and item["state"] != "running":
+            # A progress line that arrives after the result line (tqdm's last redraw) changes nothing.
+            return
         if percent is not None:
             item["percent"] = percent
         if detail is not None:
             item["detail"] = detail
+        if state is not None:
+            item["state"] = state
         if done:
             item["done"] = True
+            item["state"] = "done"
             item["percent"] = 100
         self._changed(row)
 
     def finish_running(self) -> None:
         """Stop showing tasks as running once the worker exits."""
         for row, item in enumerate(self._items):
-            if not item["done"]:
-                item["detail"] = item["detail"] or "已停止"
+            if item["state"] == "running":
+                item["state"] = "stopped"
+                item["detail"] = self.STATE_TEXT["stopped"]
                 self._changed(row)
 
     def clear(self) -> None:

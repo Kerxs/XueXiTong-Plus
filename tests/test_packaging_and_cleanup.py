@@ -63,21 +63,11 @@ class PruneRulesTestCase(unittest.TestCase):
 
 
 class InstallerPayloadTestCase(unittest.TestCase):
-    def test_lzma_payload_round_trip(self):
-        import zipfile
-        from make_payload import build
-        with tempfile.TemporaryDirectory() as tmp:
-            release = Path(tmp) / "学习通PLUS"
-            (release / "_internal" / "sub").mkdir(parents=True)
-            (release / "学习通PLUS.exe").write_bytes(b"MZ" + b"x" * 5000)
-            (release / "_internal" / "sub" / "data.bin").write_bytes(bytes(range(256)) * 40)
-            out = Path(tmp) / "payload.zip"
-            build(str(release), str(out))
-            with zipfile.ZipFile(out) as archive:
-                names = sorted(archive.namelist())
-                self.assertEqual(names, ["学习通PLUS/_internal/sub/data.bin", "学习通PLUS/学习通PLUS.exe"])
-                self.assertTrue(all(i.compress_type == zipfile.ZIP_LZMA for i in archive.infolist()))
-                self.assertEqual(archive.read("学习通PLUS/_internal/sub/data.bin"), bytes(range(256)) * 40)
+    def test_onnxruntime_c_library_is_not_packaged(self):
+        from prune import is_unused
+        self.assertTrue(is_unused("onnxruntime/capi/onnxruntime.dll"))
+        self.assertFalse(is_unused("onnxruntime/capi/onnxruntime_pybind11_state.pyd"))
+        self.assertFalse(is_unused("onnxruntime/capi/onnxruntime_providers_shared.dll"))
 
 class AccountCleanupTestCase(unittest.TestCase):
     def test_clear_account_data_keeps_other_settings(self):

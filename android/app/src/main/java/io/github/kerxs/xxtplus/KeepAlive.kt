@@ -23,6 +23,7 @@ object KeepAlive {
     /** What happens when each setting is left off; shown on the step and before leaving the guide. */
     const val CONSEQUENCE_NOTIFY = "不允许通知：看不到常驻通知，无法在通知栏暂停 / 停止；需要你选择课程或确认时也收不到提醒，任务会一直停在等待中。"
     const val CONSEQUENCE_BATTERY = "不关闭电池优化：息屏几分钟后系统进入省电休眠，网络被断开、计时暂停，视频进度不再上报，任务可能被系统直接停止。"
+    const val CONSEQUENCE_DATA_SAVER = "开着流量节省（省流量模式）：应用在后台时系统会切断它的移动数据，息屏后任务连不上网。请关闭流量节省，或把学习通 PLUS 设为“不受流量节省限制”。"
     const val CONSEQUENCE_AUTOSTART = "不设置自启动 / 后台运行：手机锁屏、清理后台或内存紧张时会直接结束本应用，任务中断，需要重新打开应用点“开始运行”。"
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("app", Context.MODE_PRIVATE)
@@ -35,8 +36,44 @@ object KeepAlive {
     fun missing(ctx: Context): List<Pair<String, String>> = buildList {
         if (!hasNotificationPermission(ctx)) add("允许通知" to CONSEQUENCE_NOTIFY)
         if (!isIgnoringBatteryOptimizations(ctx)) add("关闭电池优化" to CONSEQUENCE_BATTERY)
+        if (backgroundDataRestricted(ctx)) add("允许后台使用数据" to CONSEQUENCE_DATA_SAVER)
         if (!autostartConfirmed(ctx)) add("自启动与后台运行" to CONSEQUENCE_AUTOSTART)
     }
+
+    /** Data Saver is on and this app is not exempt: no mobile data while it is in the background. */
+    fun backgroundDataRestricted(ctx: Context): Boolean = runCatching {
+        ctx.getSystemService(android.net.ConnectivityManager::class.java).restrictBackgroundStatus ==
+            android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
+    }.getOrDefault(false)
+
+    /** Why the network may go away in the background, for the run log ("" when nothing is known). */
+    fun backgroundNetworkHint(ctx: Context): String = when {
+        !isIgnoringBatteryOptimizations(ctx) -> "没有关闭电池优化，息屏后系统会断开后台网络；请到“设置 → 权限设置”关闭电池优化"
+        backgroundDataRestricted(ctx) -> "手机开着流量节省，后台不能使用移动数据；请关闭流量节省或把本应用设为不受限制"
+        else -> ""
+    }
+
+    /** What stops the task from reaching the network once the screen is off, most important first:
+     *  (what to switch, why). Empty when the system lets this app use the network in the background.
+     *  These two are the settings Android itself enforces — a foreground service and wake locks do
+     *  not get an app through the power-saving sleep or 流量节省 without them. */
+    fun backgroundNetworkProblems(ctx: Context): List<Pair<String, String>> = buildList {
+        if (!isIgnoringBatteryOptimizations(ctx)) add("关闭电池优化" to
+            "息屏几分钟后手机进入省电休眠，系统会切断本应用的网络，视频进度报不上去。")
+        if (backgroundDataRestricted(ctx)) add("允许后台使用数据" to
+            "手机开着流量节省，应用在后台时不能使用移动数据。")
+    }
+
+    /** Opens the system page for the first thing in backgroundNetworkProblems. */
+    fun fixBackgroundNetwork(ctx: Context) {
+        if (!isIgnoringBatteryOptimizations(ctx)) requestIgnoreBatteryOptimizations(ctx)
+        else if (backgroundDataRestricted(ctx)) openDataSaverSettings(ctx)
+    }
+
+    /** This app's "不受流量节省限制" switch (falls back to the app's system page). */
+    fun openDataSaverSettings(ctx: Context): Boolean =
+        tryStart(ctx, Intent(Settings.ACTION_IGNORE_BACKGROUND_DATA_RESTRICTIONS_SETTINGS, Uri.parse("package:${ctx.packageName}")))
+            || openAppDetails(ctx)
 
     fun isIgnoringBatteryOptimizations(ctx: Context): Boolean =
         ctx.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName)

@@ -1,0 +1,9 @@
+{
+  "name": "xxtplus-telemetry",
+  "private": true,
+  "type": "module",
+  "description": "学习通 PLUS 匿名统计后台（Cloudflare Worker + D1）",
+  "scripts": {
+    "test": "node --test test/"
+  }
+}

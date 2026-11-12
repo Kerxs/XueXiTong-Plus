@@ -54,12 +54,13 @@ RESTART_DELAY_MS = 10_000
 RESTART_RESET_SECONDS = 30 * 60
 HANG_SECONDS = 20 * 60
 EXIT_STOPPED = 2
-APP_VERSION = "1.2.9"
+APP_VERSION = "1.3.0"
 # Bump whenever the 开始引导 changes: everyone who finished an older guide sees it again.
 # 1: 欢迎 / 免责声明 / 账号 / 开始使用   2: + 答题设置 (1.1.7)
 # 3: 答题设置 -> 高级设置, showing 答题来源 / 答题 / 通知推送 together (1.1.9)
 # 4: + 自动完成 step (课件 / 作业 and its 自动提交 / 课堂活动提醒) (1.2.8)
-ONBOARDING_VERSION = 4
+AUTOSAVE_MS = 600           # settings are written this long after the last change
+ONBOARDING_VERSION = 5      # 5: + 匿名统计 (1.3.0)
 ROOT_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
 BUNDLE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else ROOT_DIR
 
@@ -85,13 +86,51 @@ TYPE_LABELS = {
 }
 
 
-def onboarding_done(done, version) -> bool:
-    """Finished the current 开始引导? A guide finished before it last changed does not count."""
+# The guide's steps in order: (id, the guide version that added or last changed it). A user who
+# finished an older guide only sees the steps that are newer than the version they finished — not the
+# whole guide again. When a step is added or changed: give it the new ONBOARDING_VERSION here.
+ONBOARDING_STEPS = (("welcome", 1), ("disclaimer", 1), ("account", 1), ("auto", 4), ("advanced", 1),
+                    ("telemetry", 5), ("start", 1))
+# The disclaimer has its own version: it is shown (and has to be written out) again only when its
+# text changes. Bump this when the text in Onboarding.qml / Screens.kt changes.
+DISCLAIMER_VERSION = 1
+
+
+def _int(value) -> int:
     try:
-        seen = int(version or 0)
+        return int(value or 0)
     except (TypeError, ValueError):
-        seen = 0
-    return str(done).lower() == "true" and seen >= ONBOARDING_VERSION
+        return 0
+
+
+def disclaimer_accepted(value) -> int:
+    """The disclaimer version the user accepted. Older versions stored the app version ("1.2.9")
+    here: that was the same text as DISCLAIMER_VERSION 1."""
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    return _int(text) if text.isdigit() else 1
+
+
+def onboarding_done(done, version, disclaimer=DISCLAIMER_VERSION) -> bool:
+    """Nothing of the guide left to show?"""
+    return not onboarding_plan(done, version, disclaimer)[0]
+
+
+def onboarding_plan(done, version, disclaimer) -> tuple[list[str], bool]:
+    """(the step ids to show, new_only). new_only: the user finished an older guide and only gets
+    what is new since then — which can be skipped (except a changed disclaimer)."""
+    seen = _int(version)
+    finished = str(done).lower() == "true"
+    need_disclaimer = disclaimer_accepted(disclaimer) < DISCLAIMER_VERSION
+    if finished and seen <= 0:
+        finished = False                 # from before guide versions existed: the whole guide once
+    if not finished:
+        # the whole guide; a disclaimer already accepted in its current wording is not asked again
+        return [sid for sid, _ in ONBOARDING_STEPS if sid != "disclaimer" or need_disclaimer], False
+    steps = [sid for sid, since in ONBOARDING_STEPS
+             if (sid == "disclaimer" and need_disclaimer) or (sid not in ("disclaimer", "welcome", "start") and since > seen)]
+    return steps, True
 
 
 def load_config() -> configparser.ConfigParser:
@@ -240,6 +279,8 @@ class AppController(QObject):
     dashboardChanged = Signal()
     videoChanged = Signal()
     videoProgressChanged = Signal()
+    videosChanged = Signal()                 # the list of videos being watched (chapters run in parallel)
+    videoTick = Signal(str, float)           # one video's task position, for the grid's tiles
     workChanged = Signal()
     themeChanged = Signal()
     toast = Signal(str, str)  # message, kind
@@ -279,10 +320,21 @@ class AppController(QObject):
         self._cloud_error = ""
         self._cloudModelsFound.connect(self._on_cloud_models)
         self._video_active = False
+        # Every video being watched right now, by task name (insertion order). The single-video
+        # properties (videoTitle, videoPageUrl …) are the selected one.
+        self._videos: dict[str, dict] = {}
         self._work: dict = {}
         self._work_status = ""
+        # The last WORKS_KEPT quizzes; work / workStatus are the selected one.
+        self._works: list[dict] = []
+        self._work_sel = -1
+        self._work_picked_at = 0.0           # when the user last switched quizzes (monotonic)
         self._manual_tasks: list[dict] = []
         self._theme = str(self._settings.value("ui/theme", "system"))
+        self._autosave = QTimer(self)
+        self._autosave.setSingleShot(True)
+        self._autosave.setInterval(AUTOSAVE_MS)
+        self._autosave.timeout.connect(self._auto_save)
         self._clock = QTimer(self)
         self._clock.setInterval(1000)
         self._clock.timeout.connect(self._tick)
@@ -317,6 +369,7 @@ class AppController(QObject):
         self._previewProblem.connect(self._on_preview_problem)
         self._video_proxy = VideoProxy(
             on_problem=lambda url, status, reason="": self._previewProblem.emit(url, status, reason or ""))
+        self._start_telemetry()
 
     updater = Property(QObject, lambda self: self._updater, constant=True)
 
@@ -337,7 +390,7 @@ class AppController(QObject):
             "password": common.get("password", ""),
             "course_list": common.get("course_list", ""),
             "speed": speed if speed in SPEED_OPTIONS else "1",
-            "jobs": min(8, max(1, common.getint("jobs", fallback=1))),
+            "jobs": min(8, max(1, common.getint("jobs", fallback=2))),
             "notopen_action": action if action in ("retry", "continue") else "retry",
             "use_cookies": common.getboolean("use_cookies", fallback=False),
             "retry_interval": max(0.0, retry_interval),
@@ -350,12 +403,20 @@ class AppController(QObject):
         if self._dirty != value:
             self._dirty = value
             self.dirtyChanged.emit()
+        if value:
+            # Settings save themselves a moment after the last change (no 保存 button): the timer
+            # restarts on every change, so typing in a field is one save, not one per letter.
+            self._autosave.start()
+
+    def _auto_save(self) -> None:
+        if self._dirty:
+            self.saveConfig(quiet=True)
 
     username = _config_property("username", str, "", configChanged)
     password = _config_property("password", str, "", configChanged)
     courseList = _config_property("course_list", str, "", configChanged)
     speed = _config_property("speed", str, "1", configChanged)
-    jobs = _config_property("jobs", int, 1, configChanged)
+    jobs = _config_property("jobs", int, 2, configChanged)
     notopenAction = _config_property("notopen_action", str, "retry", configChanged)
     useCookies = _config_property("use_cookies", bool, False, configChanged)
     retryInterval = _config_property("retry_interval", float, 5.0, configChanged)
@@ -501,7 +562,9 @@ class AppController(QObject):
     iconUrl = Property(QUrl, lambda self: QUrl.fromLocalFile(str(ROOT_DIR / "assets" / "learning_plus.png")), constant=True)
 
     @Slot(result=bool)
-    def saveConfig(self) -> bool:
+    def saveConfig(self, quiet: bool = False) -> bool:
+        """Write config.ini. ``quiet``: the automatic save after a change (no line in the run log)."""
+        self._autosave.stop()
         common = self._config["common"]
         v = self._values
         common["username"] = v["username"].strip()
@@ -522,8 +585,9 @@ class AppController(QObject):
             self.toast.emit(f"保存失败：{exc}", "error")
             return False
         self._set_dirty(False)
-        # No path here: the log is on screen and ends up in screenshots.
-        self._log("INFO", "配置已保存")
+        if not quiet:
+            # No path here: the log is on screen and ends up in screenshots.
+            self._log("INFO", "配置已保存")
         return True
 
     @Slot()
@@ -663,7 +727,67 @@ class AppController(QObject):
         self.configChanged.emit()
         self.toast.emit("已恢复默认设置（账号信息保留）。", "info")
 
-    # ----- 匿名使用统计 / 一键反馈（api/telemetry.py，默认关闭） --------------
+    # ----- 匿名使用统计 / 一键反馈（api/telemetry.py） -----------------------
+    telemetryChanged = Signal()
+
+    def _telemetry_on(self) -> bool:
+        return str(self._advanced.get("common.telemetry", "true")).lower() in ("true", "1", "yes", "on")
+
+    def _set_telemetry(self, value: bool) -> None:
+        """The switch in 数据与隐私 and in the guide. Off: stop at once and delete what was waiting."""
+        from api import telemetry
+
+        if value != self._telemetry_on():
+            self.setAdvanced("common.telemetry", "true" if value else "false")
+            self.saveConfig()
+        telemetry.configure(value, DATA_DIR, process="gui")
+        self.telemetryChanged.emit()
+
+    telemetryEnabled = Property(bool, _telemetry_on, _set_telemetry, notify=telemetryChanged)
+    # False while no collector address is built in: the numbers stay on this device.
+    telemetryUploads = Property(bool, lambda self: bool(__import__("api.telemetry", fromlist=["x"]).upload_url()),
+                                constant=True)
+
+    def _start_telemetry(self) -> None:
+        """Once at start-up. Users from before 1.3.0 have "false" in config.ini that they never chose
+        (it was the default): the first time, it is switched on — the guide's new page says so and
+        has the switch. After that the user's choice is never touched."""
+        from api import telemetry
+
+        if str(self._settings.value("telemetry/asked", "false")).lower() != "true":
+            self._settings.setValue("telemetry/asked", "true")
+            if not self._telemetry_on():
+                self.setAdvanced("common.telemetry", "true")
+                self.saveConfig()
+        os.environ["XXTPLUS_VERSION"] = APP_VERSION
+        telemetry.configure(self._telemetry_on(), DATA_DIR, process="gui")
+        telemetry.count("app.start")
+        telemetry.flush()
+
+    def note(self, key: str, n: int = 1) -> None:
+        from api import telemetry
+
+        telemetry.count(key, n)
+
+    @Slot(QObject, bool, result=int)
+    def roundCorners(self, window, rounded: bool) -> int:
+        """Round the corners of a frameless window (Windows 11). Returns the corner radius the
+        window now has: 0 when it is square (asked to be, or the system has no rounded windows)."""
+        from ui import wincorners
+
+        try:
+            ok = wincorners.set_rounded(int(window.winId()), rounded)
+        except Exception:  # noqa: BLE001
+            ok = False
+        return wincorners.RADIUS if ok and rounded else 0
+
+    @Slot(float)
+    def noteStartup(self, seconds: float) -> None:
+        """How long the app took to show its window (ui/startup.py)."""
+        from api import telemetry
+
+        telemetry.gauge("perf.startup_s", seconds)
+
     @Slot(result=str)
     def feedbackText(self) -> str:
         from api import telemetry
@@ -681,6 +805,7 @@ class AppController(QObject):
         from api import telemetry
 
         telemetry.clear(DATA_DIR)
+        self.dataStatsChanged.emit()
         self.toast.emit("已清除匿名统计", "info")
 
     @Slot(str)
@@ -696,16 +821,27 @@ class AppController(QObject):
     def _onboarding_done(self) -> bool:
         if os.environ.get("CHAOXING_DESKTOP_ONBOARDING") == "1":
             return False
-        return onboarding_done(self._settings.value("onboarding/done", "false"),
-                               self._settings.value("onboarding/version", 0))
+        return not self._onboarding_plan()[0]
+
+    def _onboarding_plan(self) -> tuple[list[str], bool]:
+        if os.environ.get("CHAOXING_DESKTOP_ONBOARDING") == "1":
+            return [sid for sid, _ in ONBOARDING_STEPS], False
+        return onboarding_plan(self._settings.value("onboarding/done", "false"),
+                               self._settings.value("onboarding/version", 0),
+                               self._settings.value("onboarding/disclaimerVersion", ""))
 
     onboardingDone = Property(bool, _onboarding_done, notify=onboardingChanged)
+    # Which steps the guide shows (ids from ONBOARDING_STEPS), and whether it is the short
+    # "what is new" guide for someone who finished an older one.
+    onboardingSteps = Property("QVariantList", lambda self: self._onboarding_plan()[0], notify=onboardingChanged)
+    onboardingNewOnly = Property(bool, lambda self: self._onboarding_plan()[1], notify=onboardingChanged)
 
     @Slot()
     def finishOnboarding(self) -> None:
+        """The guide was finished or skipped: everything shown counts as seen."""
         self._settings.setValue("onboarding/done", "true")
         self._settings.setValue("onboarding/version", ONBOARDING_VERSION)
-        self._settings.setValue("onboarding/disclaimerVersion", APP_VERSION)
+        self._settings.setValue("onboarding/disclaimerVersion", DISCLAIMER_VERSION)
         self.onboardingChanged.emit()
 
     @Slot()
@@ -975,6 +1111,7 @@ class AppController(QObject):
         self._started_at = time.monotonic()
         self._elapsed = 0
         self._clock.start()
+        self._works, self._work_sel = [], -1
         self._work = {}
         self._work_status = ""
         self.workChanged.emit()
@@ -1013,6 +1150,16 @@ class AppController(QObject):
 
     @Slot()
     def shutdown(self) -> None:
+        if self._dirty:                 # a change made in the last moment before closing
+            self.saveConfig(quiet=True)
+        try:
+            from api import telemetry
+
+            telemetry.count("app.exit")
+            telemetry.gauge("cfg.preview_" + self._get_preview_mode(), 1)
+            telemetry.save("app")
+        except Exception:  # noqa: BLE001 - statistics only
+            pass
         self._clear_pause_flag()
         self._updater.shutdown()
         self._video_proxy.stop()
@@ -1057,24 +1204,34 @@ class AppController(QObject):
                 self._chapter = event.value
             elif event.kind == "task_started":
                 self._task = event.value
-                self._task_model.upsert(event.value, detail="进行中")
+                self._task_model.start(event.value)
+            elif event.kind in ("task_pending", "task_failed"):
+                self._task_model.finish(event.value, event.kind.removeprefix("task_"))
+                if event.value in self._videos or event.value == self._video_title:   # its preview ends
+                    message = f"{event.value} 等待平台确认" if event.kind == "task_pending" else f"{event.value} 未完成"
+                    self._set_video(video_message_html(message, "等待下一个视频任务"), event.value, False, message)
             elif event.kind == "task_finished":
                 self._completed += 1
-                self._task_model.upsert(event.value, detail="已完成", done=True)
+                self._task_model.finish(event.value, "done")
                 # The task's viewing time is done: stop the preview instead of letting it play on.
-                if self._video_active and event.value == self._video_title:
+                if event.value in self._videos or event.value == self._video_title:   # its preview ends
                     message = f"{event.value} 已看完"
                     self._set_video(video_message_html(message, "等待下一个视频任务"), event.value, False, message)
             self.dashboardChanged.emit()
         elif isinstance(event, ProgressEvent):
             self._task_model.upsert(event.name, percent=event.percent, detail=f"{event.done} / {event.total}")
-            if self._video_active and event.name == self._video_title:
-                seconds = clock_seconds(event.done)
-                if seconds is not None and seconds != self._video_pos:
+            entry = self._videos.get(event.name)
+            seconds = clock_seconds(event.done) if entry else None
+            if seconds is not None and seconds != entry["pos"]:
+                entry["pos"] = seconds
+                self.videoTick.emit(event.name, seconds)
+                if event.name == self._video_title:
                     self._video_pos = seconds
                     self.videoProgressChanged.emit()
         elif isinstance(event, VideoPreviewEvent):
-            if not event.valid:
+            if self.previewMode == "off":
+                pass                     # previews are switched off: nothing is registered or decoded
+            elif not event.valid:
                 self._set_video(video_message_html("无法读取当前视频预览"), "", False, "无法读取当前视频预览")
             elif event.source:
                 # Played through the local proxy so the CDN gets the Referer it expects.
@@ -1088,9 +1245,11 @@ class AppController(QObject):
                         self._preview_noted.clear()
                     self._video_source = event.source
                     page = self._video_proxy.register_page(video_source_html(local))
-                    self._set_video(video_source_html(local), event.title, True, "", page)
+                    self._set_video(video_source_html(local), event.title, True, "", page,
+                                    sources=getattr(event, "sources", None) or [event.source])
             else:
-                self._set_video(video_message_html("当前章节没有可显示的视频流"), event.title, False, "当前章节没有可显示的视频流")
+                note = getattr(event, "message", "") or "当前章节没有可显示的视频流"
+                self._set_video(video_message_html(note), event.title, False, note)
         elif isinstance(event, WorkPreviewEvent):
             self._handle_work(event)
         elif isinstance(event, ManualTaskEvent):
@@ -1112,6 +1271,7 @@ class AppController(QObject):
     # ----- content the program does not do (api/manual.py) ------------------
     manualTasksChanged = Signal()
     manualPopupRequested = Signal()
+    manualResolved = Signal()          # every reminder was taken back: the popup closes itself
 
     manualTasks = Property("QVariantList", lambda self: self._manual_tasks, notify=manualTasksChanged)
     pushConfigured = Property(bool, lambda self: self.push_configured(), notify=configChanged)
@@ -1124,6 +1284,21 @@ class AppController(QObject):
 
     def _on_manual_task(self, event: ManualTaskEvent) -> None:
         item = {"course": event.course, "chapter": event.chapter, "kind": event.kind, "name": event.name}
+        if event.checking:
+            # Not a reminder yet: the task process reloads the chapter, logs in again and retries
+            # first. Only a line at the bottom of the window — no popup, nothing in the list.
+            what = f"{event.kind}「{event.name}」" if event.name else event.kind
+            self.toast.emit(f"{what}可能需要手动完成，正在确认中…", "info")
+            return
+        if event.resolved:
+            left = [t for t in self._manual_tasks if not (t["course"] == event.course and t["name"] == event.name)]
+            if len(left) != len(self._manual_tasks):
+                self._manual_tasks = left
+                self.manualTasksChanged.emit()
+                self.toast.emit(f"「{event.name}」已自动完成，不需要手动处理了", "info")
+                if not left:
+                    self.manualResolved.emit()
+            return
         if item in self._manual_tasks:
             return
         self._manual_tasks = [*self._manual_tasks, item]
@@ -1134,22 +1309,75 @@ class AppController(QObject):
             # No push service: tell the user in the window instead.
             self.manualPopupRequested.emit()
 
+    WORKS_KEPT = 6
+    WORK_FINAL = ("已提交", "已保存")
+
+    def _work_item(self, title: str, create: bool) -> dict | None:
+        """The quiz these events belong to: the newest unfinished one with this title (events of the
+        result phases written by an older task process carry no title: the newest unfinished one)."""
+        for item in reversed(self._works):
+            if (not title or item["title"] == title) and item["status"] not in self.WORK_FINAL \
+                    and not item["status"].startswith("提交失败"):
+                return item
+        if not create:
+            return None
+        item = {"title": title, "view": {}, "status": ""}
+        self._works.append(item)
+        if len(self._works) > self.WORKS_KEPT:
+            dropped = len(self._works) - self.WORKS_KEPT
+            del self._works[:dropped]
+            self._work_sel = max(-1, self._work_sel - dropped)
+        # Show the new quiz, unless the user just picked another one to look at.
+        if self._work_sel < 0 or time.monotonic() - self._work_picked_at > 30:
+            self._work_sel = len(self._works) - 1
+        return item
+
     def _handle_work(self, event: WorkPreviewEvent) -> None:
         if not event.valid:
             return
-        if event.phase == "questions":
-            self._work = build_work_view(event.data, pending=True)
-            self._work_status = "正在查找答案"
-        elif event.phase == "filled":
-            self._work = build_work_view(event.data)
-            self._work_status = "正在提交" if self._work["submit"] else "仅保存，不提交"
-        elif event.phase in ("submitted", "saved"):
-            self._work_status = "已提交" if event.phase == "submitted" else "已保存"
+        if event.phase in ("submitted", "saved"):
             self._completed += 1
             self.dashboardChanged.emit()
-        elif event.phase == "failed":
-            self._work_status = f"提交失败：{event.data.get('msg', '')}"
+        if self.previewMode == "off":
+            return                       # counted above; no question list is built
+        title = str(event.data.get("title", "") or "")
+        if event.phase == "questions":
+            item = self._work_item(title or "章节检测", create=True)
+            item["view"] = build_work_view(event.data, pending=True)
+            item["status"] = "正在查找答案"
+        elif event.phase == "filled":
+            item = self._work_item(title or "章节检测", create=True)
+            item["view"] = build_work_view(event.data)
+            item["status"] = "正在提交" if item["view"]["submit"] else "仅保存，不提交"
+        else:
+            item = self._work_item(title, create=False)
+            if item is None:
+                return
+            if event.phase in ("submitted", "saved"):
+                item["status"] = "已提交" if event.phase == "submitted" else "已保存"
+            elif event.phase == "failed":
+                item["status"] = f"提交失败：{event.data.get('msg', '')}"
+        self._show_work()
+
+    def _show_work(self) -> None:
+        if 0 <= self._work_sel < len(self._works):
+            self._work = self._works[self._work_sel]["view"]
+            self._work_status = self._works[self._work_sel]["status"]
+        else:
+            self._work, self._work_status = {}, ""
         self.workChanged.emit()
+
+    workCount = Property(int, lambda self: len(self._works), notify=workChanged)
+    workIndex = Property(int, lambda self: self._work_sel, notify=workChanged)
+
+    @Slot(int)
+    def stepWork(self, delta: int) -> None:
+        """‹ › in the quiz header: look at another of the recent quizzes."""
+        if not self._works:
+            return
+        self._work_sel = (max(0, self._work_sel) + delta) % len(self._works)
+        self._work_picked_at = time.monotonic()
+        self._show_work()
 
     def _on_finished(self, exit_code: int, _status) -> None:
         self._read_output(final=True)
@@ -1193,6 +1421,8 @@ class AppController(QObject):
                                "确认账号、网络和设置都正常后重新开始，学习通会保留已看的进度。")
             return False
         self._restarts += 1
+        self.note("worker.hang" if self._hung else "worker.crash")
+        self.note("worker.restart")
         reason = "长时间没有响应" if self._hung else f"意外退出（退出码 {exit_code}）"
         self._log("WARNING", f"任务进程{reason}，{RESTART_DELAY_MS // 1000} 秒后自动重新开始"
                              f"（第 {self._restarts}/{MAX_RESTARTS} 次），学习通会保留已看的进度。")
@@ -1227,12 +1457,13 @@ class AppController(QObject):
     def _on_preview_problem(self, url: str, status: int, reason: str = "") -> None:
         """The video proxy could not get the previewed video. Refused / broken: ask the task for a
         fresh address (it re-reads the video status once); the preview page retries by itself."""
-        if self._process is None or url != self._video_source:
+        if self._process is None or not any(url in v["sources"] for v in self._videos.values()):
             return                       # an older video, or nothing running
         refused = status in _VideoProxyForCodes.REFUSED or status == 0
         key = (url, status)
         if key not in self._preview_noted:
             self._preview_noted.add(key)
+            self.note("preview.fail")
             if status == 502:
                 why = f"（原因：{reason}）" if reason else ""
                 self._log("WARNING", f"视频预览：所有视频地址都暂时连不上{why}，会自动重试（不影响任务运行）。")
@@ -1251,15 +1482,96 @@ class AppController(QObject):
             pass
 
     # ----- visual panel --------------------------------------------------
-    def _set_video(self, markup: str, title: str, active: bool, message: str = "", page_url: str = "") -> None:
+    def _set_video(self, markup: str, title: str, active: bool, message: str = "", page_url: str = "",
+                   sources=()) -> None:
+        """A video starts (active) or ends / cannot be shown (not active). Several can be watched at
+        once; the one shown in the single view stays the same until it ends."""
+        if active and title:
+            old = self._videos.get(title)
+            self._videos[title] = {"title": title, "html": markup, "page": page_url, "sources": list(sources),
+                                   "pos": old["pos"] if old else -1.0}
+            self.videosChanged.emit()
+            if self._video_title == title or self._video_title not in self._videos:
+                self._show_video(title)
+            return
+        if title and title in self._videos:
+            del self._videos[title]
+            self.videosChanged.emit()
+            if title != self._video_title:
+                return                   # the one on screen goes on
+            if self._videos:
+                self._show_video(next(iter(self._videos)))
+                return
+        elif self._videos and title:
+            return                       # a message about a video that is not shown: the others go on
+        elif self._videos:               # no title: the run ended / was reset
+            self._videos.clear()
+            self.videosChanged.emit()
         self._video_html = markup
         self._video_message = message
-        self._video_page = page_url
+        self._video_page = ""
         if title != self._video_title:
             self._video_pos = -1.0
         self._video_title = title
-        self._video_active = active
+        self._video_active = False
         self.videoChanged.emit()
+
+    def _show_video(self, title: str) -> None:
+        entry = self._videos[title]
+        self._video_html, self._video_page = entry["html"], entry["page"]
+        self._video_message = ""
+        self._video_title, self._video_pos = title, entry["pos"]
+        self._video_active = True
+        self.videoChanged.emit()
+
+    def _page_at(self, entry: dict) -> str:
+        return f"{entry['page']}#t={max(0.0, entry['pos']):g}&r={self._video_rate():g}" if entry["page"] else ""
+
+    videos = Property("QVariantList", lambda self: [
+        {"title": v["title"], "page": self._page_at(v)} for v in self._videos.values()], notify=videosChanged)
+    videoCount = Property(int, lambda self: len(self._videos), notify=videosChanged)
+    videoIndex = Property(int, lambda self: list(self._videos).index(self._video_title)
+                          if self._video_title in self._videos else -1, notify=videoChanged)
+
+    @Slot(int)
+    def stepVideo(self, delta: int) -> None:
+        """‹ › under the single view: show another of the videos being watched."""
+        titles = list(self._videos)
+        if len(titles) > 1:
+            at = titles.index(self._video_title) if self._video_title in titles else 0
+            self._show_video(titles[(at + delta) % len(titles)])
+
+    @Slot(str, result=str)
+    def videoPageFor(self, title: str) -> str:
+        """A tile's page, opening at that video's current task position."""
+        entry = self._videos.get(title)
+        return self._page_at(entry) if entry else ""
+
+    # single: one video, ‹ 1/4 › to switch · grid: all of them side by side · off: no previews at all
+    PREVIEW_MODES = ("single", "grid", "off")
+
+    def _get_preview_mode(self) -> str:
+        value = str(self._settings.value("ui/previewMode", "single") or "single")
+        return value if value in self.PREVIEW_MODES else "single"
+
+    def _set_preview_mode(self, value: str) -> None:
+        if value not in self.PREVIEW_MODES or value == self._get_preview_mode():
+            return
+        self._settings.setValue("ui/previewMode", value)
+        if value == "off":
+            self._works, self._work_sel = [], -1
+            self._show_work()
+            self._set_video(video_message_html("预览已关闭", "任务照常运行；在面板右上角可以重新打开"), "", False, "预览已关闭")
+        elif self._process is not None and not self._videos:
+            # switched back on during a run: ask the task for the current video again
+            self._set_video(video_message_html("等待视频任务开始"), "", False, "等待视频任务开始")
+            try:
+                PREVIEW_REFRESH_FILE.write_text("refresh", encoding="utf-8")
+            except OSError:
+                pass
+        self.prefsChanged.emit()
+
+    previewMode = Property(str, _get_preview_mode, _set_preview_mode, notify=prefsChanged)
 
     def _video_rate(self) -> float:
         return 1.0  # 倍速已失效：任务和预览都按 1 倍速

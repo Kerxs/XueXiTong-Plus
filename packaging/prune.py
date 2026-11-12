@@ -103,6 +103,11 @@ def is_unused(dest: str, *, keep_dialogs: bool = False, keep_widgets: bool = Tru
         return True
     if n.startswith("pil/_avif"):
         return True
+    # 18 MB: the same runtime as onnxruntime_pybind11_state.pyd, for C/C++ programs. The Python
+    # module does not import it (checked: no reference in the .pyd, and the captcha OCR gives the
+    # same result without it).
+    if n == "onnxruntime/capi/onnxruntime.dll":
+        return True
     return False
 
 

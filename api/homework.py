@@ -270,9 +270,9 @@ def do_homework(chaoxing, course: dict, hw: Homework, submit: bool) -> str:
     except ValueError:
         data = {"status": False, "msg": f"HTTP {result.status_code}"}
     if not data.get("status"):
-        _emit_work_preview({"phase": "failed", "msg": data.get("msg", "")})
+        _emit_work_preview({"phase": "failed", "title": title, "msg": data.get("msg", "")})
         raise RuntimeError(f"{'提交' if submit else '保存'}作业失败：{data.get('msg', '')}")
-    _emit_work_preview({"phase": "submitted" if submit else "saved", "msg": data.get("msg", "")})
+    _emit_work_preview({"phase": "submitted" if submit else "saved", "title": title, "msg": data.get("msg", "")})
     logger.info(f"{'已提交' if submit else '已保存（未提交）'}作业「{hw.title}」")
     return "submitted" if submit else "saved"
 
@@ -298,7 +298,7 @@ def run_homework(chaoxing, course: dict, submit: bool) -> dict:
             logger.warning(f"作业「{hw.title}」未能自动完成：{exc}")
             manual.report(course, {"id": "homework", "title": "作业"},
                           {"type": "other", "card_type": "homework", "jobid": hw.params.get("workId", hw.title),
-                           "name": hw.title})
+                           "name": hw.title}, urgent=True)
         time.sleep(1)
     return counts
 
@@ -326,5 +326,5 @@ def watch_activities(chaoxing, course: dict) -> int:
         left = str(item.get("nameFour") or "")
         manual.report(course, {"id": "active", "title": "课堂活动"},
                       {"type": "other", "card_type": label, "jobid": str(item.get("id", "")),
-                       "name": f"{name}（{left}）" if left else name})
+                       "name": f"{name}（{left}）" if left else name}, urgent=True)      # open right now
     return found

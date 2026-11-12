@@ -64,6 +64,26 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(values["common.course_list"], "")
         self.assertEqual(values["tiku.cover_rate"], "0.75")
 
+    def test_system_notification_is_the_default_once(self):
+        import configparser
+
+        def provider():
+            return json.loads(self.bridge.load_settings(self.config, self.template))["notification.provider"]
+
+        self.assertEqual(provider(), "Local")                    # the template: ServerChan without an address
+        for name, url in (("", ""), ("Bark", "")):               # nothing chosen / a service with no address
+            cfg = configparser.ConfigParser(interpolation=None)
+            cfg.read(self.template, encoding="utf-8")
+            cfg["notification"]["provider"], cfg["notification"]["url"] = name, url
+            with open(self.config, "w", encoding="utf-8") as fp:
+                cfg.write(fp)
+            self.assertEqual(provider(), "Local", name)
+        # the user turns pushes off and saves: that choice is kept from now on
+        values = json.loads(self.bridge.load_settings(self.config, self.template))
+        values["notification.provider"] = ""
+        self.bridge.save_settings(self.config, self.template, json.dumps(values))
+        self.assertEqual(provider(), "")
+
     def test_save_round_trip_and_no_proxy(self):
         values = json.loads(self.bridge.load_settings(self.config, self.template))
         values.update({"common.username": "13800000000", "common.password": "pw", "common.speed": "1.5",
@@ -180,6 +200,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         type(self).last = (self.headers.get("Authorization"), body)
+        type(self).calls = getattr(type(self), "calls", 0) + 1
+        if getattr(type(self), "busy", 0) > 0:               # the first `busy` requests: 503
+            type(self).busy -= 1
+            self.send_response(503)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if type(self).status != 200:
             payload = {"error": {"message": "bad key"}}
         else:
@@ -206,6 +233,7 @@ class OpenAIShimTest(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         _Handler.status = 200
+        _Handler.busy = 0
 
     def test_chat_completion(self):
         client = self.openai.OpenAI(base_url=self.base, api_key="sk-1")
@@ -225,6 +253,30 @@ class OpenAIShimTest(unittest.TestCase):
             client.chat.completions.create(model="m", messages=[])
         self.assertIn("bad key", str(ctx.exception))
         self.assertTrue(issubclass(self.openai.APITimeoutError, self.openai.APIConnectionError))
+
+    def test_busy_server_is_tried_again_like_the_sdk(self):
+        from unittest import mock
+
+        _Handler.calls, _Handler.busy = 0, 2
+        client = self.openai.OpenAI(base_url=self.base, api_key="k", max_retries=2)
+        with mock.patch.object(self.openai.time, "sleep") as sleep:
+            completion = client.chat.completions.create(model="m", messages=[])
+        self.assertEqual(completion.choices[0].message.content, '{"Answer": ["2"]}')
+        self.assertEqual(_Handler.calls, 3)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [0.5, 1.0])
+
+    def test_gives_up_after_max_retries_and_a_wrong_key_is_not_retried(self):
+        from unittest import mock
+
+        _Handler.calls, _Handler.busy = 0, 5
+        client = self.openai.OpenAI(base_url=self.base, api_key="k", max_retries=1)
+        with mock.patch.object(self.openai.time, "sleep"), self.assertRaises(self.openai.InternalServerError):
+            client.chat.completions.create(model="m", messages=[])
+        self.assertEqual(_Handler.calls, 2)
+        _Handler.calls, _Handler.busy, _Handler.status = 0, 0, 401
+        with self.assertRaises(self.openai.AuthenticationError):
+            client.chat.completions.create(model="m", messages=[])
+        self.assertEqual(_Handler.calls, 1)
 
     def test_connection_error(self):
         client = self.openai.OpenAI(base_url="http://127.0.0.1:9/v1", api_key="k")

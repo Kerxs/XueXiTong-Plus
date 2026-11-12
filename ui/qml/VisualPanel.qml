@@ -8,42 +8,120 @@ Card {
     property bool suspended: false
     readonly property var work: controller.work
     readonly property bool hasWork: !!(work && work.questions && work.questions.length > 0)
+    readonly property bool previewOff: controller.previewMode === "off"
+    // Grid: every video being watched side by side (2 → left and right, 3-4 → 2 × 2, more → 3 columns).
+    readonly property bool grid: controller.previewMode === "grid" && controller.videoCount > 1
 
     title: "可视化面板"
-    subtitle: "当前视频与章节检测 · 只读"
+    subtitle: "视频与答题 · 只读"
     icon: ""
     bodySpacing: 10
 
     actions: [
-        Rectangle {
-            radius: 10
-            color: Theme.surfaceAlt
-            border.color: Theme.border
-            implicitWidth: lockRow.implicitWidth + 16
-            implicitHeight: 22
-            Behavior on color { ColorAnimation { duration: Theme.slow } }
-            Row {
-                id: lockRow
-                anchors.centerIn: parent
-                spacing: 4
-                Text { text: ""; font.family: Theme.iconFont; font.pixelSize: 10; color: Theme.muted; anchors.verticalCenter: parent.verticalCenter }
-                Text { text: "只读"; color: Theme.muted; font.family: Theme.uiFont; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
-            }
+        Segmented {
+            model: [{ value: "single", label: "普通" }, { value: "grid", label: "网格" }, { value: "off", label: "关闭" }]
+            current: controller.previewMode
+            onPicked: (value) => controller.previewMode = value
         }
     ]
+
+    // ---------- previews switched off ----------
+    Item {
+        visible: card.previewOff
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        onVisibleChanged: if (visible && Theme.motion) offIn.restart()
+        Column {
+            id: offNote
+            anchors.centerIn: parent
+            spacing: 6
+            transform: Translate { id: offShift; y: 0 }
+            ParallelAnimation {
+                id: offIn
+                NumberAnimation { target: offNote; property: "opacity"; from: 0; to: 1; duration: Theme.normal; easing.type: Easing.OutCubic }
+                NumberAnimation { target: offShift; property: "y"; from: 10; to: 0; duration: Theme.normal; easing.type: Easing.OutCubic }
+            }
+            width: parent.width - 40
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: "预览已关闭"
+                color: Theme.muted
+                font.family: Theme.uiFont
+                font.pixelSize: 14
+                font.weight: Font.DemiBold
+            }
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                text: "不加载视频画面和题目，节省内存和 CPU；任务照常运行，进度看左边的“任务进度”。\n在右上角选“普通”或“网格”可以重新打开。"
+                color: Theme.faint
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+                lineHeight: 1.3
+            }
+        }
+    }
 
     // ---------- top: video ----------
     Item {
         id: videoArea
+        visible: !card.previewOff
         Layout.fillWidth: true
-        // 16:9, but never more than 45% of the panel so the quiz keeps room below.
-        Layout.preferredHeight: Math.min(width * 9 / 16, card.height * 0.45)
+        // 16:9 for one row of tiles, but never more than 45% of the panel (55% for two rows)
+        // so the quiz keeps room below.
+        readonly property int columns: !card.grid ? 1 : controller.videoCount <= 2 ? controller.videoCount
+            : controller.videoCount <= 4 ? 2 : 3
+        readonly property int rows: card.grid ? Math.ceil(controller.videoCount / columns) : 1
+        Layout.preferredHeight: Math.min(width / columns * 9 / 16 * rows, card.height * (rows > 1 ? 0.55 : 0.45))
         VideoView {
             anchors.fill: parent
+            visible: !card.grid
             suspended: card.suspended
+        }
+        GridLayout {
+            anchors.fill: parent
+            visible: card.grid
+            columns: videoArea.columns
+            rowSpacing: 6
+            columnSpacing: 6
+            Repeater {
+                model: card.grid ? controller.videos : []
+                delegate: Item {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    VideoView {
+                        anchors.fill: parent
+                        slotTitle: modelData.title
+                        suspended: card.suspended
+                    }
+                    Rectangle {            // the tile's name, over its bottom edge
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 18
+                        color: Qt.rgba(0, 0, 0, 0.55)
+                        visible: card.suspended
+                        Text {
+                            anchors.fill: parent
+                            anchors.leftMargin: 6
+                            anchors.rightMargin: 6
+                            verticalAlignment: Text.AlignVCenter
+                            text: modelData.title
+                            color: "#e6ecf5"
+                            font.family: Theme.uiFont
+                            font.pixelSize: 10
+                            elide: Text.ElideMiddle
+                        }
+                    }
+                }
+            }
         }
     }
     RowLayout {
+        visible: !card.previewOff
         Layout.fillWidth: true
         spacing: 6
         Text {
@@ -54,17 +132,25 @@ Card {
         }
         Text {
             Layout.fillWidth: true
-            text: controller.videoTitle !== "" ? controller.videoTitle + " · 静音" : "视频预览静音，播放、进度、右键和键盘操作均已禁用"
+            text: card.grid ? controller.videoCount + " 个视频同时预览 · 静音"
+                : controller.videoTitle !== "" ? controller.videoTitle + " · 静音" : "视频预览静音，播放、进度、右键和键盘操作均已禁用"
             color: Theme.faint
             font.family: Theme.uiFont
             font.pixelSize: 11
             elide: Text.ElideMiddle
         }
+        Pager {
+            visible: !card.grid && controller.videoCount > 1
+            index: Math.max(0, controller.videoIndex)
+            count: controller.videoCount
+            onStep: (delta) => controller.stepVideo(delta)
+        }
     }
 
     // ---------- divider: quiz header ----------
-    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border; Behavior on color { ColorAnimation { duration: Theme.slow } } }
+    Rectangle { visible: !card.previewOff; Layout.fillWidth: true; height: 1; color: Theme.border; Behavior on color { ColorAnimation { duration: Theme.slow } } }
     RowLayout {
+        visible: !card.previewOff
         Layout.fillWidth: true
         spacing: 10
         Text { text: ""; font.family: Theme.iconFont; font.pixelSize: 14; color: Theme.accent }
@@ -89,6 +175,11 @@ Card {
                 font.pixelSize: 11
             }
         }
+        Pager {
+            index: Math.max(0, controller.workIndex)
+            count: controller.workCount
+            onStep: (delta) => controller.stepWork(delta)
+        }
         StatusPill {
             visible: controller.workStatus !== ""
             text: controller.workStatus
@@ -102,7 +193,7 @@ Card {
         height: 4
         radius: 2
         color: Theme.border
-        visible: card.hasWork
+        visible: card.hasWork && !card.previewOff
         Rectangle {
             id: coverFill
             // Animate a 0..1 fraction (not a pixel width) so it is right however the bar is sized.
@@ -134,6 +225,10 @@ Card {
 
     // ---------- bottom: questions ----------
     WorkView {
+        id: workView
+        visible: !card.previewOff
+        onVisibleChanged: if (visible && Theme.motion) workIn.restart()
+        NumberAnimation { id: workIn; target: workView; property: "opacity"; from: 0; to: 1; duration: Theme.normal; easing.type: Easing.OutCubic }
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.minimumHeight: 120

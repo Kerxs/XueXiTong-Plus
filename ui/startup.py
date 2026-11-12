@@ -8,9 +8,10 @@ incubation of the main window) and reports progress to ``Splash.qml``.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, Slot, qCritical
+from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, Slot, qCritical, qInfo
 from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent, QQmlEngine, QQmlIncubator
 
 APP_NAME = "学习通PLUS"          # identity (QSettings location) — do not change
@@ -28,6 +29,27 @@ class _Incubator(QQmlIncubator):
         self._on_status(status)
 
 
+_IMPORTED = time.perf_counter()
+
+
+def since_process_start() -> float:
+    """Seconds since this process was created (Windows: from the system; elsewhere: since this
+    module was imported, which leaves out the interpreter's own start)."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            if ctypes.windll.kernel32.GetProcessTimes(handle, *(ctypes.byref(t) for t in (created, exited, kernel, user))):
+                started = ((created.dwHighDateTime << 32) | created.dwLowDateTime) / 1e7 - 11644473600
+                return max(0.0, time.time() - started)
+        except Exception:  # noqa: BLE001
+            pass
+    return time.perf_counter() - _IMPORTED
+
+
 class StartupLoader(QObject):
     statusChanged = Signal()
     loadedChanged = Signal()
@@ -35,6 +57,8 @@ class StartupLoader(QObject):
 
     def __init__(self, app, engine: QQmlApplicationEngine) -> None:
         super().__init__(app)
+        self._marks: list[tuple[str, float]] = []      # (step, seconds since the process started)
+        self._startup_logged = False
         self._app = app
         self._engine = engine
         self._status = "正在启动"
@@ -60,6 +84,7 @@ class StartupLoader(QObject):
     splashShown = Property(bool, lambda self: self._splash_shown, constant=True)
 
     def _step(self, text: str, progress: float) -> None:
+        self._marks.append((text, since_process_start()))
         self._status = text
         self._progress = progress
         self.statusChanged.emit()
@@ -157,6 +182,21 @@ class StartupLoader(QObject):
         self._step("界面加载失败", 1.0)
         QTimer.singleShot(1500, lambda: self._app.exit(1))
 
+    def _log_startup(self) -> None:
+        """One line in gui.log: how long each loading step took and when the window appeared
+        (seconds since the process started). The splash animation is part of the last number."""
+        if self._startup_logged:
+            return
+        self._startup_logged = True
+        shown = since_process_start()
+        steps = "，".join(f"{name} {at:.2f}" for name, at in self._marks)
+        loaded = self._marks[-1][1] if self._marks else shown
+        qInfo(f"startup: 加载完成 {loaded:.2f} s，窗口显示 {shown:.2f} s（{steps}）")
+        try:
+            self.controller.noteStartup(loaded)
+        except Exception:  # noqa: BLE001 - statistics only
+            pass
+
     @Slot()
     def _on_splash_finished(self) -> None:
         self._splash_done = True
@@ -178,6 +218,7 @@ class StartupLoader(QObject):
         if window is None:
             return
         window.setProperty("visible", True)
+        self._log_startup()
         window.raise_()
         window.requestActivate()
         for message in self._warnings:

@@ -49,6 +49,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -86,7 +87,11 @@ fun RunScreen(snackbar: SnackbarHostState, openSettings: () -> Unit, openKeepAli
     var starting by remember { mutableStateOf(false) }
     LaunchedEffect(RunState.running) { if (RunState.running) starting = false }
 
-    fun start() {
+    // Before a run starts: the two system settings without which the task loses the network once
+    // the screen is off. Asked every time they are missing; "仍然开始" starts without them.
+    var networkGate by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+
+    fun start(skipNetworkGate: Boolean = false) {
         if (starting || RunState.running) return
         starting = true
         scope.launch {
@@ -97,6 +102,12 @@ fun RunScreen(snackbar: SnackbarHostState, openSettings: () -> Unit, openKeepAli
                 snackbar.showSnackbar(problem)
                 return@launch
             }
+            val blocked = if (skipNetworkGate) emptyList() else KeepAlive.backgroundNetworkProblems(ctx)
+            if (blocked.isNotEmpty()) {
+                starting = false
+                networkGate = blocked
+                return@launch
+            }
             SettingsModel.save(ctx)
             RunState.reset()
             if (hasNotificationPermission(ctx)) TaskService.send(ctx, TaskService.ACTION_START)
@@ -104,6 +115,39 @@ fun RunScreen(snackbar: SnackbarHostState, openSettings: () -> Unit, openKeepAli
             delay(8000)
             starting = false  // the service never answered: allow another try
         }
+    }
+
+    if (networkGate.isNotEmpty()) {
+        // Back from the system page: what was switched disappears; when nothing is left the run starts.
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(700)
+                val left = KeepAlive.backgroundNetworkProblems(ctx)
+                if (left.isEmpty()) { networkGate = emptyList(); start(); break }
+                if (left != networkGate) networkGate = left
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { networkGate = emptyList() },
+            containerColor = c.surface, titleContentColor = c.text, textContentColor = c.text,
+            shape = RoundedCornerShape(Dimens.radiusLarge),
+            title = { Text("先让任务在后台能联网") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("息屏或切到后台后，下面的设置不改，系统会断开本应用的网络：", color = c.muted, fontSize = 13.sp)
+                    networkGate.forEach { (name, why) ->
+                        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).background(c.surfaceAlt)
+                            .padding(horizontal = 10.dp, vertical = 8.dp)) {
+                            Text(name, color = c.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text(why, color = c.faint, fontSize = 12.sp)
+                        }
+                    }
+                    Text("点“去开启”，在系统弹出的页面里选允许；回来后任务自动开始。", color = c.muted, fontSize = 12.sp)
+                }
+            },
+            confirmButton = { XButton("去开启", { KeepAlive.fixBackgroundNetwork(ctx) }, kind = Kind.Primary) },
+            dismissButton = { XButton("仍然开始", { networkGate = emptyList(); start(skipNetworkGate = true) }, kind = Kind.Ghost) },
+        )
     }
 
     val accountMissing = SettingsModel.values["common.use_cookies"] != "true" &&
@@ -250,15 +294,20 @@ private fun ProgressPane() {
     val c = X.colors
     val items = RunState.progress.values.toList()
     if (items.isEmpty()) { Empty("还没有音视频任务", Icons.Outlined.OndemandVideo); return }
-    XCard(Modifier.fillMaxSize(), title = "音视频任务", subtitle = "${items.count { it.percent >= 100 }} / ${items.size} 已完成") {
+    XCard(Modifier.fillMaxSize(), title = "音视频任务", subtitle = "${items.count { it.state == "done" }} / ${items.size} 已完成") {
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             items(items, key = { it.name }) { p ->
                 Column(Modifier.animateItem(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row {
                         Text(p.name, Modifier.weight(1f), color = c.text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("${p.done} / ${p.total}", color = c.muted, fontSize = 12.sp)
+                        Text(when (p.state) {
+                            "done" -> "已完成"; "pending" -> "待确认"; "failed" -> "未完成，稍后重试"
+                            else -> if (p.total.isEmpty()) "进行中" else "${p.done} / ${p.total}"
+                        }, color = c.muted, fontSize = 12.sp)
                     }
-                    XProgress(p.percent / 100f, color = if (p.percent >= 100) c.success else c.accent)
+                    XProgress(p.percent / 100f, color = when (p.state) {
+                        "done" -> c.success; "pending" -> c.warning; "failed" -> c.muted; else -> c.accent
+                    })
                 }
             }
         }
@@ -283,51 +332,112 @@ private fun requestFreshPreview(ctx: android.content.Context) {
     runCatching { java.io.File(PythonBridge.dataDir(ctx), "preview_refresh.flag").writeText("refresh") }
 }
 
+/** "‹ 2/4 ›" — steps through the videos being watched / the recent quizzes. */
 @Composable
-private fun VideoPane() {
+private fun Pager(index: Int, count: Int, onStep: (Int) -> Unit) {
     val c = X.colors
-    val source = RunState.videoSource
-    if (!RunState.running || !allowedVideo(source)) {
-        Empty(if (RunState.running) "等待视频任务…" else "运行后在这里显示当前视频（静音）", Icons.Outlined.Videocam)
-        return
+    if (count < 2) return
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("‹", Modifier.clip(RoundedCornerShape(8.dp)).clickable { onStep(-1) }.padding(horizontal = 12.dp, vertical = 4.dp),
+            color = c.text, fontSize = 20.sp)
+        Text("${index + 1}/$count", color = c.muted, fontSize = 12.sp)
+        Text("›", Modifier.clip(RoundedCornerShape(8.dp)).clickable { onStep(1) }.padding(horizontal = 12.dp, vertical = 4.dp),
+            color = c.text, fontSize = 20.sp)
     }
+}
+
+@Composable
+private fun PreviewModeSwitch() {
+    val ctx = LocalContext.current
+    Segmented(listOf("single" to "普通", "grid" to "网格", "off" to "关闭"), RunState.previewMode,
+        { RunState.choosePreviewMode(ctx, it) }, Modifier.fillMaxWidth())
+}
+
+/** One muted, read-only video kept in step with its task (desktop VideoView). */
+@Composable
+private fun VideoTile(item: VideoItem, modifier: Modifier = Modifier, small: Boolean = false) {
     var player by remember { mutableStateOf<PreviewPlayer?>(null) }
     var state by remember { mutableStateOf("loading") }
-    // Desktop VideoView: start where the task is, re-sync when it drifts, pause with the task.
-    LaunchedEffect(source, player) {
+    // start where the task is, re-sync when it drifts, pause with the task
+    LaunchedEffect(item.title, player) {
         val view = player ?: return@LaunchedEffect
         while (true) {
             delay(3000)
-            view.sync(RunState.videoPosition(), RunState.paused)
+            view.sync(RunState.videoPosition(item.title), RunState.paused)
         }
     }
-    XCard(Modifier.fillMaxWidth(), title = RunState.videoTitle.ifEmpty { "学习通视频" }, subtitle = "静音预览，不可操作") {
-        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(Dimens.radius)).background(Color.Black),
-            contentAlignment = Alignment.Center) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    PreviewPlayer(ctx).also { p ->
-                        p.onState = { state = it }
-                        p.onGiveUp = { requestFreshPreview(ctx) }
-                        player = p
-                    }
-                },
-                update = { view -> view.show(RunState.videoSources.ifEmpty { listOf(source) }, RunState.videoPosition()) },
-                onRelease = { view -> if (player === view) player = null; view.release() },
-            )
-            when (state) {
-                "loading" -> Text("正在加载视频…", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
-                "retrying" -> Text("视频加载失败，正在重试…", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
-                "error" -> Text("视频暂时无法加载，正在重试（不影响任务运行）", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
-            }
+    Box(modifier.aspectRatio(16f / 9f).clip(RoundedCornerShape(Dimens.radius)).background(Color.Black),
+        contentAlignment = Alignment.Center) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                PreviewPlayer(ctx).also { p ->
+                    p.onState = { state = it }
+                    p.onGiveUp = { requestFreshPreview(ctx) }
+                    player = p
+                }
+            },
+            update = { view -> view.show(item.sources, RunState.videoPosition(item.title)) },
+            onRelease = { view -> if (player === view) player = null; view.release() },
+        )
+        val size = if (small) 11.sp else 13.sp
+        when (state) {
+            "loading" -> Text("正在加载…", color = Color.White.copy(alpha = 0.7f), fontSize = size)
+            "retrying" -> Text("加载失败，正在重试…", color = Color.White.copy(alpha = 0.8f), fontSize = size)
+            "error" -> Text(if (small) "暂时无法加载" else "视频暂时无法加载，正在重试（不影响任务运行）",
+                color = Color.White.copy(alpha = 0.8f), fontSize = size)
         }
-        Text("与任务进度同步，1 倍速播放。", color = c.faint, fontSize = 12.sp)
     }
 }
+
+@Composable
+private fun VideoPane() {
+    val c = X.colors
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        PreviewModeSwitch()
+        if (RunState.previewMode == "off") {
+            Empty("预览已关闭：不加载视频和题目，更省电省内存；任务照常运行", Icons.Outlined.Videocam)
+            return@Column
+        }
+        val items = RunState.videos.filter { v -> v.sources.any { allowedVideo(it) } }
+        if (!RunState.running || items.isEmpty()) {
+            Empty(if (RunState.running) "等待视频任务…" else "运行后在这里显示当前视频（静音）", Icons.Outlined.Videocam)
+            return@Column
+        }
+        if (RunState.previewMode == "grid" && items.size > 1) {
+            // two in a row: left and right; more wrap to the next row
+            XCard(Modifier.fillMaxWidth(), title = "${items.size} 个视频同时预览", subtitle = "静音预览，不可操作") {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items.chunked(2).forEach { pair ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            pair.forEach { item ->
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    key(item.title) { VideoTile(item, Modifier.fillMaxWidth(), small = true) }
+                                    Text(item.title, color = c.faint, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                            if (pair.size == 1) Box(Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+            return@Column
+        }
+        val item = items.firstOrNull { it.title == RunState.videoTitle } ?: items.first()
+        XCard(Modifier.fillMaxWidth(), title = item.title.ifEmpty { "学习通视频" }, subtitle = "静音预览，不可操作") {
+            key(item.title) { VideoTile(item, Modifier.fillMaxWidth()) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("与任务进度同步，1 倍速播放。", Modifier.weight(1f), color = c.faint, fontSize = 12.sp)
+                Pager(items.indexOf(item), items.size) { RunState.stepVideo(it) }
+            }
+        }
+    }
+}
+
 @Composable
 private fun WorkPane() {
     val c = X.colors
+    if (RunState.previewMode == "off") { Empty("预览已关闭（在“视频”页可以重新打开）", Icons.Outlined.Assignment); return }
     if (RunState.questions.isEmpty()) { Empty("章节检测出现时在这里显示题目和答案", Icons.Outlined.Assignment); return }
     val phase = when (RunState.workPhase) {
         "questions" -> "查找答案中"; "filled" -> "已填写，准备提交"; "submitted" -> "已提交"
@@ -344,6 +454,7 @@ private fun WorkPane() {
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("覆盖率 ${RunState.workCoverRate}%", color = c.muted, fontSize = 12.sp)
                 }
+                Pager(RunState.workSel.coerceAtLeast(0), RunState.works.size) { RunState.stepWork(it) }
                 StatusPill(pillKind, phase)
             }
         }
@@ -398,11 +509,21 @@ private fun LogPane() {
 }
 
 /** The worker waits on input(): course choice when no course ID is set, or a Y/n question. */
+/** Seconds a run dialog stays open before it answers / closes itself (desktop: ConfirmDialog.countdown). */
+private const val DIALOG_SECONDS = 60
+
 @Composable
 fun RunDialogs(openSettings: () -> Unit = {}) {
     val ctx = LocalContext.current
     val c = X.colors
     if (RunState.showManualDialog && RunState.manualTasks.isNotEmpty()) {
+        // Only a reminder: the run goes on behind it, and it closes itself after a minute
+        // (counting again when another item arrives).
+        var left by remember(RunState.manualTasks.size) { mutableStateOf(DIALOG_SECONDS) }
+        LaunchedEffect(RunState.manualTasks.size) {
+            while (left > 0) { delay(1000); left -= 1 }
+            RunState.showManualDialog = false
+        }
         AlertDialog(
             onDismissRequest = { RunState.showManualDialog = false },
             containerColor = c.surface, titleContentColor = c.text, textContentColor = c.text,
@@ -423,20 +544,26 @@ fun RunDialogs(openSettings: () -> Unit = {}) {
                     }
                 }
             },
-            confirmButton = { XButton("知道了", { RunState.showManualDialog = false }, kind = Kind.Primary) },
+            confirmButton = { XButton("知道了（$left）", { RunState.showManualDialog = false }, kind = Kind.Primary) },
             dismissButton = {
                 if (!RunState.pushConfigured()) XButton("设置通知", { RunState.showManualDialog = false; openSettings() }, kind = Kind.Ghost)
             },
         )
     }
     RunState.prompt?.let { text ->
+        // The task waits for this answer: after a minute it goes on by itself (the default answer).
+        var left by remember(text) { mutableStateOf(DIALOG_SECONDS) }
+        LaunchedEffect(text) {
+            while (left > 0) { delay(1000); left -= 1 }
+            if (RunState.prompt == text) { RunState.prompt = null; TaskService.send(ctx, TaskService.ACTION_ANSWER, "y") }
+        }
         AlertDialog(
             onDismissRequest = {},
             containerColor = c.surface, titleContentColor = c.text, textContentColor = c.text,
             shape = RoundedCornerShape(Dimens.radiusLarge),
             title = { Text("需要确认") },
             text = { Text(text) },
-            confirmButton = { XButton("继续", { RunState.prompt = null; TaskService.send(ctx, TaskService.ACTION_ANSWER, "y") }, kind = Kind.Primary) },
+            confirmButton = { XButton("继续（$left）", { RunState.prompt = null; TaskService.send(ctx, TaskService.ACTION_ANSWER, "y") }, kind = Kind.Primary) },
             dismissButton = { XButton("不继续", { RunState.prompt = null; TaskService.send(ctx, TaskService.ACTION_ANSWER, "n") }) },
         )
     }
