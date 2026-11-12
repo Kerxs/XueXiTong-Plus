@@ -42,7 +42,9 @@ def _cloud_problem(values: dict) -> str:
         return CLOUD_PROVIDER_MISSING
     if not str(values.get("tiku.key", "")).strip():
         return AI_KEY_MISSING
-    return ""
+    from core import aiproviders
+
+    return aiproviders.list_problem(values.get(aiproviders.FIELD, ""), cloud_only=True)
 
 
 def start_problem(values: dict, data_dir: Path | None = None, cloud_only: bool = False) -> str:

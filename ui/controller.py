@@ -25,7 +25,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
-from core import secret
+from core import aiproviders, secret
 from ui import advanced, cloudmodels, localmodels
 from ui.models import LogModel, TaskModel
 from ui.videoproxy import VideoProxy as _VideoProxyForCodes
@@ -319,6 +319,10 @@ class AppController(QObject):
         self._cloud_state = "idle"      # idle | running | done | error
         self._cloud_error = ""
         self._cloudModelsFound.connect(self._on_cloud_models)
+        self._backup_models, self._backup_state, self._backup_error = [], "idle", ""
+        self._backupModelsFound.connect(self._on_backup_models)
+        self._ai_test = ("idle", "", None)
+        self._aiTestDone.connect(self._on_ai_test)
         self._video_active = False
         # Every video being watched right now, by task name (insertion order). The single-video
         # properties (videoTitle, videoPageUrl …) are the selected one.
@@ -436,6 +440,8 @@ class AppController(QObject):
             self._advanced[field_id] = text
             if field_id in ("tiku.endpoint", "tiku.key") and self._cloud_state != "running":
                 self._reset_cloud_models()   # the list belonged to the old address / key
+            if field_id in ("tiku.endpoint", "tiku.key", "tiku.model"):
+                self.resetAiTest()           # a test result is about the settings it was run with
             self._set_dirty(True)
             self.configChanged.emit()
 
@@ -472,6 +478,8 @@ class AppController(QObject):
     cloudModels = Property("QVariantList", lambda self: self._cloud_models, notify=cloudModelsChanged)
     cloudModelState = Property(str, lambda self: self._cloud_state, notify=cloudModelsChanged)
     cloudModelError = Property(str, lambda self: self._cloud_error, notify=cloudModelsChanged)
+    # models left out of the list because they cannot answer questions (vectors, speech, pictures …)
+    cloudModelsHidden = Property(int, lambda self: getattr(self, "_cloud_hidden", 0), notify=cloudModelsChanged)
 
     @Slot(str, result=str)
     def providerName(self, endpoint: str) -> str:
@@ -495,6 +503,19 @@ class AppController(QObject):
         self.setAdvanced(cloudmodels.CUSTOM_KEY, cloudmodels.dump_custom(cloudmodels.add_custom(saved, name, endpoint)))
         self.setAdvanced("tiku.endpoint", cloudmodels.normalize_endpoint(endpoint))
         return ""
+
+    @Slot(str, str, result=str)
+    def saveCustomProvider(self, name: str, endpoint: str) -> str:
+        """Save a custom provider without switching the primary service to it (备用服务商)."""
+        saved = self._advanced.get(cloudmodels.CUSTOM_KEY, "")
+        problem = cloudmodels.custom_problem(name, endpoint, saved)
+        if not problem:
+            self.setAdvanced(cloudmodels.CUSTOM_KEY, cloudmodels.dump_custom(cloudmodels.add_custom(saved, name, endpoint)))
+        return problem
+
+    @Slot(str, result=str)
+    def normalizeEndpoint(self, endpoint: str) -> str:
+        return cloudmodels.normalize_endpoint(endpoint)
 
     @Slot(str)
     def removeCustomProvider(self, endpoint: str) -> None:
@@ -528,6 +549,7 @@ class AppController(QObject):
         threading.Thread(target=work, name="fetch-cloud-models", daemon=True).start()
 
     def _on_cloud_models(self, models: list, error: str) -> None:
+        models, self._cloud_hidden = cloudmodels.chat_models(list(models))
         self._cloud_models = list(models)
         self._cloud_error = error
         self._cloud_state = "error" if error else "done"
@@ -536,6 +558,122 @@ class AppController(QObject):
     @Slot(str)
     def useCloudModel(self, model: str) -> None:
         self.setAdvanced("tiku.model", model)
+
+    # ----- 备用服务商 (core/aiproviders.py): tried in order when the primary fails ------------
+    backupProvidersChanged = Signal()
+    backupModelsChanged = Signal()
+    _backupModelsFound = Signal(list, str)
+
+    def _backups_text(self) -> str:
+        return self._advanced.get(aiproviders.FIELD, "")
+
+    def _backup_rows(self) -> list:
+        custom = self._advanced.get(cloudmodels.CUSTOM_KEY, "")
+        return [{**entry, "name": cloudmodels.identify(entry["endpoint"], custom),
+                 "problem": aiproviders.problem(entry["endpoint"], entry["key"], entry["model"])}
+                for entry in aiproviders.parse(self._backups_text())]
+
+    backupProviders = Property("QVariantList", lambda self: self._backup_rows(), notify=configChanged)
+    backupLimit = Property(int, lambda self: aiproviders.MAX_BACKUPS, constant=True)
+    backupModels = Property("QVariantList", lambda self: self._backup_models, notify=backupModelsChanged)
+    backupModelState = Property(str, lambda self: self._backup_state, notify=backupModelsChanged)
+    backupModelError = Property(str, lambda self: self._backup_error, notify=backupModelsChanged)
+    backupModelsHidden = Property(int, lambda self: getattr(self, "_backup_hidden", 0), notify=backupModelsChanged)
+
+    # ----- 测试：ask the chosen model one tiny question (AI 大模型 / 备用服务商) ---------------------
+    aiTestChanged = Signal()
+    _aiTestDone = Signal(str, str, float)
+    aiTestState = Property(str, lambda self: self._ai_test[0], notify=aiTestChanged)     # idle | running | ok | error
+    aiTestMessage = Property(str, lambda self: self._ai_test[1], notify=aiTestChanged)
+
+    @Slot(str, str, str)
+    def testAi(self, endpoint: str, key: str, model: str) -> None:
+        if self._ai_test[0] == "running":
+            return
+        proxy = self._advanced.get("tiku.http_proxy", "")
+        token = (endpoint, key, model)
+        self._ai_test = ("running", "正在向模型提一个小问题…", token)
+        self.aiTestChanged.emit()
+
+        def work():
+            started = time.monotonic()
+            reason = cloudmodels.test_chat(endpoint, key, model, proxy)
+            self._aiTestDone.emit(reason, repr(token), time.monotonic() - started)
+
+        threading.Thread(target=work, name="test-ai", daemon=True).start()
+
+    def _on_ai_test(self, reason: str, token: str, seconds: float) -> None:
+        if repr(self._ai_test[2]) != token:
+            return                       # the settings changed meanwhile: that answer is about old ones
+        self._ai_test = (("error", reason) if reason else ("ok", f"可以使用，{seconds:.1f} 秒回答")) + (self._ai_test[2],)
+        self.aiTestChanged.emit()
+
+    @Slot()
+    def resetAiTest(self) -> None:
+        if self._ai_test[0] != "idle":
+            self._ai_test = ("idle", "", None)
+            self.aiTestChanged.emit()
+
+    def _set_backups(self, entries: list) -> None:
+        self.setAdvanced(aiproviders.FIELD, aiproviders.dump(entries))
+
+    @Slot(int, str, str, str, result=str)
+    def saveBackupProvider(self, index: int, endpoint: str, key: str, model: str) -> str:
+        """Add (index -1) or change a backup service. Returns why it cannot be saved ("" = saved)."""
+        endpoint = cloudmodels.normalize_endpoint(endpoint) if endpoint.strip() else ""
+        problem = aiproviders.problem(endpoint, key, model)
+        if problem:
+            return problem
+        self._set_backups(aiproviders.save(self._backups_text(), index, endpoint, key, model))
+        return ""
+
+    @Slot(int)
+    def removeBackupProvider(self, index: int) -> None:
+        self._set_backups(aiproviders.remove(self._backups_text(), index))
+
+    @Slot(int, int)
+    def moveBackupProvider(self, index: int, delta: int) -> None:
+        self._set_backups(aiproviders.move(self._backups_text(), index, delta))
+
+    @Slot(int)
+    def promoteBackupProvider(self, index: int) -> None:
+        """A backup becomes the primary; the old primary takes its place in the list."""
+        primary = {"endpoint": self._advanced.get("tiku.endpoint", ""), "key": self._advanced.get("tiku.key", ""),
+                   "model": self._advanced.get("tiku.model", "")}
+        chosen, rest = aiproviders.promote(self._backups_text(), index, primary)
+        self.setAdvanced("tiku.endpoint", chosen["endpoint"])
+        self.setAdvanced("tiku.key", chosen["key"])
+        self.setAdvanced("tiku.model", chosen["model"])
+        self._set_backups(rest)
+
+    @Slot(str, str)
+    def fetchBackupModels(self, endpoint: str, key: str) -> None:
+        """The model list of a backup service (the add / edit dialog), like 选择模型 for the primary."""
+        if self._backup_state == "running":
+            return
+        proxy = self._advanced.get("tiku.http_proxy", "")
+        self._backup_models, self._backup_state, self._backup_error = [], "running", ""
+        self.backupModelsChanged.emit()
+
+        def work():
+            try:
+                self._backupModelsFound.emit(cloudmodels.list_models(endpoint, key, proxy), "")
+            except cloudmodels.ModelListError as exc:
+                self._backupModelsFound.emit([], str(exc))
+
+        threading.Thread(target=work, name="fetch-backup-models", daemon=True).start()
+
+    def _on_backup_models(self, models: list, error: str) -> None:
+        models, self._backup_hidden = cloudmodels.chat_models(list(models))
+        self._backup_models, self._backup_error = list(models), error
+        self._backup_state = "error" if error else "done"
+        self.backupModelsChanged.emit()
+
+    @Slot()
+    def resetBackupModels(self) -> None:
+        if self._backup_state != "running":
+            self._backup_models, self._backup_state, self._backup_error = [], "idle", ""
+            self.backupModelsChanged.emit()
 
     @Slot(str, str)
     def useLocalModel(self, endpoint: str, model: str) -> None:

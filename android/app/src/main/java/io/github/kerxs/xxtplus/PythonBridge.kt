@@ -76,6 +76,10 @@ object PythonBridge {
     fun listModels(ctx: Context, endpoint: String, key: String, proxy: String): String =
         module(ctx).callAttr("list_models", endpoint, key, proxy).toString()
 
+    /** 测试: "" when the model answered, else the reason. Network: call off the main thread. */
+    fun testAi(ctx: Context, endpoint: String, key: String, model: String): String =
+        module(ctx).callAttr("test_ai", endpoint, key, model).toString()
+
     /** 识别课程: logs in with the saved account; slow (network), call off the main thread. */
     fun listCourses(ctx: Context): String = module(ctx).callAttr("list_courses", configFile(ctx).absolutePath).toString()
 

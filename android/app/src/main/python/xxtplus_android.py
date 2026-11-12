@@ -163,6 +163,8 @@ def settings_schema() -> str:
                 f = {**f, "hint": _HINTS[f["id"]]}
             if f["type"] in _LABELS:
                 f = {**f, "label": _LABELS[f["type"]]}
+            if f["type"] == "more":
+                f = {**f, "hint": "题目图片、合并提问、请求间隔"}   # no local models on the phone
             if f["id"] == "notification.provider":
                 # 本机通知 = Android's own notification shade (api.notification.Local).
                 f = {**f, "options": [{"value": "Local", "label": "系统通知（默认）"}, *f["options"]],
@@ -271,10 +273,20 @@ def list_models(endpoint: str, key: str, proxy: str) -> str:
     from ui import cloudmodels
 
     try:
-        return json.dumps({"ok": True, "models": cloudmodels.list_models(endpoint, key, proxy)},
-                          ensure_ascii=False)
+        models, hidden = cloudmodels.chat_models(cloudmodels.list_models(endpoint, key, proxy))
+        return json.dumps({"ok": True, "models": models, "hidden": hidden}, ensure_ascii=False)
     except Exception as exc:  # shown to the user as is
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
+
+def test_ai(endpoint: str, key: str, model: str) -> str:
+    """测试: "" when the model answered a tiny question, else why not."""
+    from ui import cloudmodels
+
+    try:
+        return cloudmodels.test_chat(endpoint, key, model)
+    except Exception as exc:  # noqa: BLE001 - shown to the user
+        return str(exc)
 
 
 # ---------------------------------------------------------------- running

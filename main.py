@@ -244,6 +244,10 @@ def register_config_secrets(common_config, tiku_config, notification_config) -> 
     for key in ("tokens", "key", "siliconflow_key", "go_authorization"):
         for part in str(tiku_config.get(key) or "").split(","):
             register_secret(part)
+    from core import aiproviders
+
+    for backup in aiproviders.parse(tiku_config.get(aiproviders.CONFIG_KEY, "")):
+        register_secret(backup["key"])
     register_secret(notification_config.get("url"))
 
 

@@ -99,16 +99,28 @@ async function receive(request, env) {
 }
 
 /** Constant-time comparison of the admin password. */
-async function authorized(request, env) {
-  const token = env.ADMIN_TOKEN || "";
-  const given = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-  if (token.length < 12 || !given) return false;        // no or a too short password configured: closed
+async function sameSecret(a, b) {
   const enc = new TextEncoder();
-  const [a, b] = await Promise.all([crypto.subtle.digest("SHA-256", enc.encode(token)), crypto.subtle.digest("SHA-256", enc.encode(given))]);
-  const x = new Uint8Array(a), y = new Uint8Array(b);
+  const [x, y] = (await Promise.all([crypto.subtle.digest("SHA-256", enc.encode(a)), crypto.subtle.digest("SHA-256", enc.encode(b))]))
+    .map((d) => new Uint8Array(d));
   let diff = 0;
   for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
   return diff === 0;
+}
+
+// The password as typed: spaces around it never count (on either side, e.g. a pasted newline in
+// `wrangler secret put`), and any characters work — a header carries only Latin-1, so the page
+// sends it percent-encoded ("Bearer u:<encodeURIComponent>"); a plain "Bearer <password>" (curl,
+// older page) still works.
+async function authorized(request, env) {
+  const token = String(env.ADMIN_TOKEN || "").trim();
+  let given = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  if (given.startsWith("u:")) {
+    try { given = decodeURIComponent(given.slice(2)); } catch { return false; }
+  }
+  given = given.trim();
+  if ([...token].length < 12 || !given) return false;   // no or a too short password configured: closed
+  return sameSecret(token, given);
 }
 
 function filters(url) {
@@ -220,10 +232,11 @@ svg{width:100%;height:120px;display:block}code{font-size:12px;word-break:break-a
 const $=(id)=>document.getElementById(id);const esc=(s)=>String(s??"").replace(/[&<>"]/g,(c)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let token=sessionStorage.getItem("t")||"";const fmt=(n)=>Number(n||0).toLocaleString("zh-CN",{maximumFractionDigits:1});
 function query(){const p=new URLSearchParams();for(const [k,id] of [["from","from"],["to","to"],["app","appSel"],["os","osSel"]]){if($(id).value)p.set(k,$(id).value)}return p.toString()}
-async function api(path){const r=await fetch(path,{headers:{authorization:"Bearer "+token}});if(r.status===401)throw new Error("密码不对");if(!r.ok)throw new Error("读取失败（"+r.status+"）");return r}
+const WRONG="密码不对。管理密码要和部署时设置的完全一样（至少 12 位）；忘了可以在 server/telemetry 里运行 npx wrangler secret put ADMIN_TOKEN 重新设置";
+async function api(path){const r=await fetch(path,{headers:{authorization:"Bearer u:"+encodeURIComponent(token)}});if(r.status===401)throw new Error(WRONG);if(!r.ok)throw new Error("读取失败（"+r.status+"）");return r}
 function row(cells){return "<tr>"+cells.map((c,i)=>i?'<td class="n">'+c+"</td>":"<td>"+c+"</td>").join("")+"</tr>"}
 function head(names){return "<tr>"+names.map((c,i)=>i?'<th class="n">'+c+"</th>":"<th>"+c+"</th>").join("")+"</tr>"}
-async function load(){$("err").textContent="";try{const d=await(await api("/api/summary?"+query())).json();render(d)}catch(e){$("err").textContent=e.message;if(e.message==="密码不对")logout()}}
+async function load(){$("err").textContent="";try{const d=await(await api("/api/summary?"+query())).json();render(d)}catch(e){$("err").textContent=e.message;if(e.message===WRONG)logout()}}
 function render(d){const t={};for(const r of d.totals){(t[r.key]??={})[r.kind]=r.value;if(r.kind==="gmax")t[r.key].top=r.top}
 const c=(k)=>t[k]?.count||0,avgMs=(k)=>t[k]?.n?t[k].ms/t[k].n:0,avgG=(k)=>t[k]?.gn?t[k].gsum/t[k].gn:0;
 if(!$("from").value){$("from").value=d.from;$("to").value=d.to}

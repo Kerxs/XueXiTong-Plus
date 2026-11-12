@@ -22,8 +22,10 @@ TIKU_PROVIDERS = [
     {"value": "TikuLike", "kind": "tiku", "label": "LIKE 知识库", "hint": "需要 TOKEN，支持联网和识图"},
     {"value": "TikuGo", "kind": "tiku", "label": "GO 题", "hint": "网课小工具题库"},
     {"value": "TikuAdapter", "kind": "tiku", "label": "TikuAdapter", "hint": "自建的开源题库服务"},
-    {"value": "AI", "kind": "ai", "label": "OpenAI 兼容接口", "hint": "DeepSeek、通义千问、Kimi 等提供 OpenAI 格式接口的大模型"},
-    {"value": "SiliconFlow", "kind": "ai", "label": "硅基流动", "hint": "SiliconFlow 大模型"},
+    {"value": "AI", "kind": "ai", "label": "AI 大模型", "hint": "DeepSeek、通义千问、Kimi、硅基流动等"},
+    # legacy: only shown to whoever already uses it (硅基流动 is also a service under “AI 大模型”)
+    {"value": "SiliconFlow", "kind": "ai", "label": "硅基流动（旧版设置）", "hint": "新配置请在“AI 大模型”里选择硅基流动",
+     "legacy": True},
 ]
 
 # How 章节检测 answers are found. Stored only through tiku.provider: the mode is derived
@@ -31,7 +33,7 @@ TIKU_PROVIDERS = [
 ANSWER_MODES = [
     {"value": "none", "label": "不查找", "hint": "不使用题库或 AI，找不到答案的题目随机作答"},
     {"value": "tiku", "label": "题库", "hint": "在题库中搜索题目，按选择顺序查询"},
-    {"value": "ai", "label": "AI 大模型", "hint": "让大模型读题作答，需要接口地址和 API Key"},
+    {"value": "ai", "label": "AI 大模型", "hint": "让大模型读题作答：选一个服务商，填上它的 API Key 就能用"},
     {"value": "both", "label": "题库 + AI", "hint": "先查题库，题库找不到的题再交给 AI"},
 ]
 _KIND = {p["value"]: p["kind"] for p in TIKU_PROVIDERS}
@@ -90,7 +92,7 @@ def _f(section, key, type_, label, default="", hint="", **extra) -> dict:
 
 # type: providers | switch | percent | number | choice | text | secret
 #       hidden (stored, no control of its own)
-#       display only: heading | localmodels | aiprovider | modelpicker
+#       display only: heading | localmodels | aiprovider | modelpicker | backupproviders
 GROUPS: list[dict] = [
     {
         "id": "auto",
@@ -146,18 +148,24 @@ GROUPS: list[dict] = [
             _f("tiku", "", "heading", "TikuAdapter", show={"key": "tiku.provider", "has": ["TikuAdapter"]}),
             _f("tiku", "url", "text", "服务地址", "", "例如 http://127.0.0.1:8060/adapter-service/search",
                show={"key": "tiku.provider", "has": ["TikuAdapter"]}),
-            _f("tiku", "", "heading", "OpenAI 兼容接口", show={"key": "tiku.provider", "has": ["AI"]}),
-            _f("tiku", "", "localmodels", "本机模型", show={"key": "tiku.provider", "has": ["AI"]}),
+            _f("tiku", "", "heading", "AI 大模型", show={"key": "tiku.provider", "has": ["AI"]}),
             _f("tiku", "", "aiprovider", "服务商", show={"key": "tiku.provider", "has": ["AI"]}),
             # JSON list of {"name", "endpoint"} (ui/cloudmodels.py), edited by the 服务商 field
             _f("tiku", "custom_providers", "hidden", "自定义服务商", ""),
             _f("tiku", "endpoint", "text", "接口地址", "", "通常要带 /v1，例如 https://api.example.com/v1",
-               show={"key": "tiku.provider", "has": ["AI"]}),
-            _f("tiku", "key", "secret", "API Key", "", "本机运行的模型服务（127.0.0.1 / localhost）可以留空",
+               show=[{"key": "tiku.provider", "has": ["AI"]}, {"key": "tiku.endpoint", "unlisted": True}]),
+            _f("tiku", "key", "secret", "API Key", "", "在服务商的网站创建（点上面的“获取 API Key”）；本机运行的模型可以留空",
                show={"key": "tiku.provider", "has": ["AI"]}),
             _f("tiku", "", "modelpicker", "选择模型", show={"key": "tiku.provider", "has": ["AI"]}),
-            _f("tiku", "model", "text", "模型名称", "", "可以从上面的列表选择，也可以直接填写",
+            _f("tiku", "model", "text", "模型名称", "", "从上面的列表点一个，或者直接填写",
                show={"key": "tiku.provider", "has": ["AI"]}),
+            _f("tiku", "", "aitest", "测试", show={"key": "tiku.provider", "has": ["AI"]}),
+            # 备用服务商 (core/aiproviders.py): JSON list, edited by the backupproviders control
+            _f("tiku", "", "backupproviders", "备用服务商", show={"key": "tiku.provider", "has": ["AI"]}),
+            _f("tiku", "backup_providers", "hidden", "备用服务商", ""),
+            _f("tiku", "", "more", "更多 AI 选项", hint="本机模型、题目图片、代理、合并提问、请求间隔",
+               show={"key": "tiku.provider", "has": ["AI", "SiliconFlow"]}),
+            _f("tiku", "", "localmodels", "本机模型", show={"key": "tiku.provider", "has": ["AI"]}, more=True),
             _f("tiku", "image_mode", "choice", "题目图片", "auto",
                "题目或选项是图片时怎么交给 AI", options=[
                    {"value": "auto", "label": "自动（先直接识别，不支持就转成文字）"},
@@ -263,6 +271,11 @@ def ai_config_problem(values: dict[str, str]) -> str:
             return "答题方式用到了 AI，但还没填写模型名称"
         if not values.get("tiku.key", "").strip() and not _is_local(endpoint):
             return "答题方式用到了 AI，但还没填写 API Key"
+        from core import aiproviders
+
+        backup = aiproviders.list_problem(values.get(aiproviders.FIELD, ""))
+        if backup:
+            return backup
     if "SiliconFlow" in picked and not values.get("tiku.siliconflow_key", "").strip():
         return "答题方式用到了硅基流动，但还没填写 API Key"
     return ""
@@ -283,7 +296,16 @@ def answer_setup_problem(values: dict[str, str]) -> str:
     return ""
 
 
-DISPLAY_ONLY = ("heading", "localmodels", "aiprovider", "modelpicker")
+# 更多 AI 选项: these stay folded away until the "more" row is opened — setting up AI needs only
+# 服务商, API Key and 模型.
+MORE_AI = {"tiku.image_mode", "tiku.vision_model", "tiku.vision_endpoint", "tiku.vision_key", "tiku.http_proxy",
+           "tiku.ai_batch", "tiku.min_interval_seconds", "tiku.check_llm_connection"}
+for _group in GROUPS:
+    for _field in _group["fields"]:
+        if _field["id"] in MORE_AI:
+            _field["more"] = True
+
+DISPLAY_ONLY = ("heading", "localmodels", "aiprovider", "modelpicker", "backupproviders", "more", "aitest")
 
 
 def fields() -> list[dict]:

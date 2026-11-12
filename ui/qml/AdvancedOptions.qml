@@ -33,8 +33,15 @@ Card {
         if (c.eq !== undefined) return value(c.key) === c.eq
         if (c.ne !== undefined) return value(c.key) !== c.ne
         if (c.on !== undefined) return isOn(c.key) === c.on
+        if (c.unlisted !== undefined) {
+            controller.customProviders          // re-evaluated when a custom service is saved
+            const address = String(value(c.key)).trim()
+            return (address !== "" && controller.providerName(address) === "") === c.unlisted
+        }
         return true
     }
+    // 更多 AI 选项 open (fields marked `more` in ui/advanced.py); closed every time the page is built.
+    property bool moreOpen: false
 
     // Embedded in the 开始引导: no header row (title, icon, edit button).
     property bool embedded: false
@@ -140,14 +147,15 @@ Card {
             Loader {
                 required property var modelData
                 Layout.fillWidth: true
-                active: modelData.type !== "hidden" && adv.shown(modelData)
+                active: modelData.type !== "hidden" && adv.shown(modelData) && (!modelData.more || adv.moreOpen)
                 visible: active
                 property var field: modelData
                 sourceComponent: ({
                     heading: headingField, switch: switchField, number: numberField,
                     percent: percentField, choice: choiceField, providers: providersField,
                     text: textField, secret: textField, localmodels: localModelsField,
-                    aiprovider: aiProviderField, modelpicker: modelPickerField
+                    aiprovider: aiProviderField, modelpicker: modelPickerField,
+                    backupproviders: backupProvidersField, more: moreField, aitest: aiTestField
                 })[modelData.type]
             }
         }
@@ -366,6 +374,182 @@ Card {
         }
     }
 
+    // 更多 AI 选项: one row that unfolds the rarely needed settings (图片、代理、合并提问、请求间隔).
+    Component {
+        id: moreField
+        ColumnLayout {
+            readonly property var field: parent ? parent.field : ({})
+            spacing: 6
+            Rectangle { Layout.fillWidth: true; Layout.topMargin: 4; height: 1; color: Theme.border }
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 40
+                radius: Theme.radius
+                color: moreHover.hovered ? Theme.surfaceAlt : "transparent"
+                Behavior on color { ColorAnimation { duration: Theme.fast } }
+                HoverHandler { id: moreHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: adv.moreOpen = !adv.moreOpen }
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 4
+                    anchors.rightMargin: 8
+                    spacing: 10
+                    Text {
+                        text: "\uE70D"
+                        font.family: Theme.iconFont
+                        font.pixelSize: 12
+                        color: Theme.muted
+                        rotation: adv.moreOpen ? 180 : 0
+                        Behavior on rotation { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
+                    }
+                    Text { text: field.label; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 13 }
+                    Text {
+                        Layout.fillWidth: true
+                        text: adv.moreOpen ? "" : field.hint + "，一般不用改"
+                        color: Theme.faint
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+                }
+            }
+        }
+    }
+
+    // 测试: ask the chosen model one tiny question, so a wrong key / model shows now, not at the run.
+    Component {
+        id: aiTestField
+        RowLayout {
+            readonly property var field: parent ? parent.field : ({})
+            id: testRow
+            readonly property string testState: controller.aiTestState
+            spacing: 12
+            AppButton {
+                text: testRow.testState === "running" ? "正在测试…" : "测试一下"
+                glyph: "\uE768"
+                kind: testRow.testState === "ok" ? "secondary" : "primary"
+                enabled: testRow.testState !== "running" && adv.value("tiku.endpoint").trim() !== "" && adv.value("tiku.model").trim() !== ""
+                onClicked: controller.testAi(adv.value("tiku.endpoint"), adv.value("tiku.key"), adv.value("tiku.model"))
+            }
+            Text {
+                Layout.fillWidth: true
+                text: testRow.testState === "idle" ? "选好模型后点一下，确认 API Key 和模型都能用"
+                    : (testRow.testState === "ok" ? "\u2713 " : "") + controller.aiTestMessage
+                color: testRow.testState === "ok" ? Theme.success : testRow.testState === "error" ? Theme.danger : Theme.muted
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+                font.weight: testRow.testState === "ok" ? Font.DemiBold : Font.Normal
+                wrapMode: Text.Wrap
+            }
+        }
+    }
+
+    // 备用服务商 (core/aiproviders.py): tried in order when the primary one fails. Each row can move
+    // up / down, become the primary (it swaps with it), be edited or removed.
+    Component {
+        id: backupProvidersField
+        ColumnLayout {
+            id: bp
+            readonly property var field: parent ? parent.field : ({})
+            readonly property var rows: controller.backupProviders
+            spacing: 6
+            Rectangle { Layout.fillWidth: true; Layout.topMargin: 4; height: 1; color: Theme.border }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+                    Text { text: "备用服务商"; color: Theme.text; font.family: Theme.uiFont; font.pixelSize: 13 }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "上面的服务商出错（连不上、超时、Key 无效、额度不足、服务故障）时，按这里的顺序换下一个继续答题"
+                        color: Theme.muted
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                }
+                AppButton {
+                    text: "添加"
+                    glyph: ""
+                    enabled: bp.rows.length < controller.backupLimit
+                    onClicked: backupDialog.edit(-1, null)
+                }
+            }
+            Repeater {
+                model: bp.rows
+                Rectangle {
+                    id: brow
+                    required property var modelData
+                    required property int index
+                    Layout.fillWidth: true
+                    implicitHeight: 52
+                    radius: Theme.radius
+                    color: browHover.hovered ? Theme.surfaceAlt : Theme.surface
+                    border.color: brow.modelData.problem !== "" ? Theme.warning : Theme.border
+                    Behavior on color { ColorAnimation { duration: Theme.fast } }
+                    HoverHandler { id: browHover }
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 6
+                        spacing: 10
+                        Rectangle {
+                            width: 22; height: 22; radius: 11
+                            color: Theme.accentSoft
+                            Text {
+                                anchors.centerIn: parent
+                                text: brow.index + 2            // 1 is the primary service above
+                                color: Theme.accent
+                                font.family: Theme.uiFont
+                                font.pixelSize: 11
+                                font.weight: Font.DemiBold
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 1
+                            Text {
+                                Layout.fillWidth: true
+                                text: (brow.modelData.name !== "" ? brow.modelData.name : brow.modelData.endpoint)
+                                    + " · " + (brow.modelData.model !== "" ? brow.modelData.model : "未填模型")
+                                color: Theme.text
+                                font.family: Theme.uiFont
+                                font.pixelSize: 13
+                                font.weight: Font.DemiBold
+                                elide: Text.ElideRight
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: brow.modelData.problem !== "" ? brow.modelData.problem : brow.modelData.endpoint
+                                color: brow.modelData.problem !== "" ? Theme.warning : Theme.muted
+                                font.family: Theme.uiFont
+                                font.pixelSize: 11
+                                elide: Text.ElideMiddle
+                            }
+                        }
+                        IconButton { glyph: ""; tip: "上移"; enabled: brow.index > 0; onClicked: controller.moveBackupProvider(brow.index, -1) }
+                        IconButton { glyph: ""; tip: "下移"; enabled: brow.index < bp.rows.length - 1; onClicked: controller.moveBackupProvider(brow.index, 1) }
+                        IconButton { glyph: ""; tip: "设为首选（和上面的服务商交换位置）"; onClicked: controller.promoteBackupProvider(brow.index) }
+                        IconButton { glyph: ""; tip: "编辑"; onClicked: backupDialog.edit(brow.index, brow.modelData) }
+                        IconButton { glyph: ""; tip: "删除"; onClicked: controller.removeBackupProvider(brow.index) }
+                    }
+                }
+            }
+            Text {
+                visible: bp.rows.length === 0
+                Layout.fillWidth: true
+                text: "还没有备用服务商：上面的服务商出错时，AI 答不了的题会随机作答或留空。"
+                color: Theme.faint
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+            BackupProviderDialog { id: backupDialog }
+        }
+    }
+
     // 选择模型: GET <接口地址>/models with the key, then pick from the list (searchable).
     Component {
         id: modelPickerField
@@ -378,6 +562,21 @@ Card {
             readonly property var shownModels: {
                 const q = filter.text.trim().toLowerCase()
                 return q === "" ? models : models.filter(m => m.toLowerCase().indexOf(q) >= 0)
+            }
+            // No "获取模型列表" step to learn: once a service and its key are there, the list is
+            // fetched by itself (shortly after typing stops). The button stays for 重新获取.
+            readonly property string source: adv.value("tiku.endpoint").trim() + "|" + adv.value("tiku.key").trim()
+            onSourceChanged: autoFetch.restart()
+            Component.onCompleted: autoFetch.restart()
+            Timer {
+                id: autoFetch
+                interval: 900
+                onTriggered: {
+                    const endpoint = adv.value("tiku.endpoint").trim()
+                    const key = adv.value("tiku.key").trim()
+                    const local = /^https?:\/\/(localhost|127\.|\[::1\])/i.test(endpoint)
+                    if (mp.state === "idle" && endpoint !== "" && (key !== "" || local)) controller.fetchCloudModels()
+                }
             }
             spacing: 8
             RowLayout {
@@ -393,8 +592,9 @@ Card {
                     Layout.fillWidth: true
                     text: mp.state === "running" ? "正在向服务查询可用的模型"
                         : mp.state === "error" ? controller.cloudModelError
-                        : mp.state === "done" ? "共 " + mp.models.length + " 个模型，点一个即可使用"
-                        : "填好接口地址和 API Key 后，可以获取这个服务的全部模型"
+                        : mp.state === "done" ? "共 " + mp.models.length + " 个能答题的模型，点一个即可使用"
+                            + (controller.cloudModelsHidden > 0 ? "（已隐藏 " + controller.cloudModelsHidden + " 个向量、语音、绘图等模型）" : "")
+                        : "填好 API Key 后会自动列出这个服务的模型"
                     color: mp.state === "error" ? Theme.warning : Theme.muted
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -415,11 +615,23 @@ Card {
                 color: Theme.sunken
                 clip: true
                 Flickable {
+                    id: modelFlick
                     anchors.fill: parent
                     anchors.margins: 4
                     contentHeight: modelColumn.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar {}
+                    // Scrolling over the list moves only the list, also at its ends: it used to carry
+                    // the whole settings page along once the list stopped (Issue #1).
+                    WheelHandler {
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                        onWheel: event => {
+                            const step = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y / 120 * 64
+                            modelFlick.contentY = Math.max(0, Math.min(modelFlick.contentHeight - modelFlick.height,
+                                                                       modelFlick.contentY - step))
+                            event.accepted = true
+                        }
+                    }
                     Column {
                         id: modelColumn
                         width: parent.width
@@ -691,8 +903,13 @@ Card {
                     { kind: "ai", title: "AI 服务", shown: pf.mode === "ai" || pf.mode === "both" }
                 ]
                 ColumnLayout {
+                    id: kindRow
                     required property var modelData
-                    visible: modelData.shown
+                    readonly property var options: pf.field.options.filter(o => o.kind === modelData.kind
+                        && (!o.legacy || adv.listOf(pf.field.id).indexOf(o.value) >= 0))
+                    // AI with only “AI 大模型” to choose: nothing to choose, no row
+                    visible: modelData.shown && !(modelData.kind === "ai" && options.length === 1
+                        && adv.listOf(pf.field.id).indexOf(options[0].value) >= 0)
                     Layout.fillWidth: true
                     spacing: 6
                     Text { text: modelData.title; color: Theme.muted; font.family: Theme.uiFont; font.pixelSize: 12 }
@@ -700,7 +917,7 @@ Card {
                         Layout.fillWidth: true
                         spacing: 8
                         Repeater {
-                            model: pf.field.options.filter(o => o.kind === modelData.kind)
+                            model: kindRow.options
                             ProviderChip {
                                 required property var modelData
                                 field: pf.field
@@ -711,7 +928,10 @@ Card {
                 }
             }
             Text {
-                visible: pf.mode !== "none"
+                // “可多选 …” means nothing when AI is the only thing there is to pick
+                visible: pf.mode === "tiku" || pf.mode === "both"
+                    || (pf.mode === "ai" && pf.field.options.filter(o => o.kind === "ai"
+                        && (!o.legacy || adv.listOf(pf.field.id).indexOf(o.value) >= 0)).length > 1)
                 Layout.fillWidth: true
                 text: pf.mode === "both" ? "数字是查询顺序：先按顺序查题库，都找不到再交给 AI" : pf.field.hint
                 color: Theme.muted

@@ -1362,7 +1362,7 @@ class AI(Tiku):
                 continue
             try:
                 with self._lock:
-                    answers = self._query_batch([q_list[i] for i in group])
+                    answers = self._failover(lambda: self._query_batch([q_list[i] for i in group]))
             except Exception as e:
                 logger.warning(f"{self.name} 合并提问失败，改为逐题询问: {type(e).__name__}: {e}")
                 answers = {}
@@ -1522,9 +1522,73 @@ class AI(Tiku):
                 logger.debug(f"API请求间隔过短, 等待 {sleep_time} 秒")
                 time.sleep(sleep_time)
 
+    # ----- several services, tried in order (core/aiproviders.py) -------------------
+    # A service that failed is skipped for a while: RETRY_AFTER seconds, or for the rest of the run
+    # when it cannot work at all (wrong key, no permission, unknown model / address).
+    RETRY_AFTER = 300
+    _down: dict = {}                 # (endpoint, model) -> time.time() until which it is skipped
+
+    @staticmethod
+    def _switch_reason(exc: Exception):
+        """How long to skip a service after this error (float('inf') = the rest of the run), or None
+        when the error is not the service's fault (a question it refused, an unreadable answer …)
+        and another service would not do better."""
+        if isinstance(exc, ValueError) and "API Key" in str(exc):
+            return float("inf")
+        if isinstance(exc, (openai.AuthenticationError, openai.PermissionDeniedError, openai.NotFoundError)):
+            return float("inf")
+        if isinstance(exc, (openai.RateLimitError, openai.APIConnectionError, openai.InternalServerError)):
+            return AI.RETRY_AFTER
+        if isinstance(exc, openai.APIStatusError) and (exc.status_code >= 500 or exc.status_code in (402, 408)):
+            return AI.RETRY_AFTER
+        return None
+
+    @staticmethod
+    def _label(profile: dict) -> str:
+        try:
+            host = httpx.URL(profile["endpoint"]).host or profile["endpoint"]
+        except Exception:
+            host = profile["endpoint"]
+        return f"{profile['model'] or '未填模型'}（{host}）"
+
+    def _use(self, profile: dict) -> None:
+        self.endpoint, self.key, self.model = profile["endpoint"], profile["key"], profile["model"]
+
+    def _failover(self, call):
+        """Run ``call`` (it reads self.endpoint / key / model) with the first service that works:
+        the primary, then the backups in their order. Services that failed recently go last."""
+        profiles = getattr(self, "profiles", None) or []
+        if len(profiles) <= 1:
+            return call()
+        now = time.time()
+        mark = lambda p: (p["endpoint"].rstrip("/").lower(), p["model"])  # noqa: E731
+        order = [p for p in profiles if AI._down.get(mark(p), 0) <= now] + \
+                [p for p in profiles if AI._down.get(mark(p), 0) > now]
+        for n, profile in enumerate(order):
+            self._use(profile)
+            try:
+                result = call()
+            except Exception as exc:
+                skip = self._switch_reason(exc)
+                if skip is not None:
+                    AI._down[mark(profile)] = now + skip
+                if skip is None or n == len(order) - 1:
+                    raise
+                from api import telemetry
+
+                telemetry.count("ai.failover")
+                logger.warning(f"AI 服务商 {self._label(profile)} 出错：{self._explain_error(exc)}；"
+                               f"改用 {self._label(order[n + 1])}")
+                continue
+            if profile is not profiles[0] and getattr(self, "_announced", None) != mark(profile):
+                self._announced = mark(profile)
+                logger.info(f"正在使用备用 AI 服务商 {self._label(profile)}")
+            return result
+        return call()       # not reached: the last service either answered or raised
+
     def _query(self, q_info: dict):
         with self._lock:
-            return self._query_locked(q_info)
+            return self._failover(lambda: self._query_locked(q_info))
 
     def _query_locked(self, q_info: dict):
         def remove_md_json_wrapper(md_str):
@@ -1591,9 +1655,13 @@ class AI(Tiku):
     _vision_refused: set = set()
 
     def _init_tiku(self):
-        self.endpoint = self._conf['endpoint']
-        self.key = self._conf['key']
-        self.model = self._conf['model']
+        from core import aiproviders
+
+        # 首选服务商在前，备用服务商按设置里的顺序（出错时按顺序换下一个）
+        self.profiles = aiproviders.profiles(self._conf)
+        self._use(self.profiles[0])
+        if len(self.profiles) > 1:
+            logger.info(f"AI 答题：首选 {self._label(self.profiles[0])}，另有 {len(self.profiles) - 1} 个备用服务商")
         # 题目图片：auto / direct / transcribe / off（设置 → 答题来源 → 题目图片）
         mode = str(self._conf.get('image_mode', 'auto') or 'auto').strip().lower()
         self.image_mode = mode if mode in ('auto', 'direct', 'transcribe', 'off') else 'auto'
@@ -1610,16 +1678,35 @@ class AI(Tiku):
             self.batch = 5
 
     def check_llm_connection(self) -> bool:
+        """检查大模型连接：有备用服务商时逐个检查，任意一个能用就可以开始（出错的会被跳过）。"""
+        profiles = getattr(self, "profiles", None) or []
+        if len(profiles) <= 1:
+            return self._check_one()
+        working = []
+        for n, profile in enumerate(profiles):
+            self._use(profile)
+            role = "首选" if n == 0 else f"备用 {n}"
+            if self._check_one(f"{role} {self._label(profile)}"):
+                working.append(profile)
+        self._use(profiles[0])
+        if not working:
+            return False
+        if working[0] is not profiles[0]:
+            logger.warning(f"首选 AI 服务商不可用，答题时会使用 {self._label(working[0])}")
+        return True
+
+    def _check_one(self, label: str = "") -> bool:
         """
         检查大模型连接是否可用
         发送一个简单的测试请求来验证 API 配置
         """
+        name = f"{self.name}（{label}）" if label else self.name
         with self._lock:
-            logger.info(f'正在检查 {self.name} 连接...')
+            logger.info(f'正在检查 {name} 连接...')
             try:
                 # 初始化客户端
                 if not (self.endpoint or '').strip():
-                    logger.error(f'{self.name} 连接检查失败：未填写接口地址（设置 → 高级选项 → 答题来源）')
+                    logger.error(f'{name} 连接检查失败：未填写接口地址（设置 → 高级选项 → 答题来源）')
                     return False
                 client = self._make_client()
 
@@ -1643,14 +1730,14 @@ class AI(Tiku):
                 if completion.choices:
                     msg = completion.choices[0].message
                     if msg.content or getattr(msg, 'reasoning_content', None):
-                        logger.info(f'{self.name} 连接检查成功')
+                        logger.info(f'{name} 连接检查成功')
                         return True
 
-                logger.error(f'{self.name} 连接检查失败：未收到响应')
+                logger.error(f'{name} 连接检查失败：未收到响应')
                 return False
 
             except Exception as e:
-                logger.error(f'{self.name} 连接检查失败：{self._explain_error(e)}')
+                logger.error(f'{name} 连接检查失败：{self._explain_error(e)}')
                 return False
 
 class SiliconFlow(Tiku):

@@ -17,6 +17,10 @@ BaseDialog {
     property string category: "cn"
     property bool adding: false
     property string error: ""
+    // forBackup: picking does not change the primary service; `chosen` hands the address to the
+    // backup-service dialog instead (core/aiproviders.py).
+    property bool forBackup: false
+    signal chosen(string address)
     readonly property var custom: controller.customProviders
     readonly property var categories: controller.aiRegions.map(r => ({ id: r.id, label: r.label }))
         .concat([{ id: "custom", label: "自定义服务" }])
@@ -41,7 +45,8 @@ BaseDialog {
         open()
     }
     function pick(address) {
-        controller.useProvider(address)
+        if (forBackup) chosen(address)
+        else controller.useProvider(address)
         close()
     }
     function startAdding() {
@@ -54,6 +59,11 @@ BaseDialog {
         nameInput.forceActiveFocus()
     }
     function save() {
+        if (forBackup) {
+            error = controller.saveCustomProvider(nameInput.text, urlInput.text)
+            if (error === "") { adding = false; pick(controller.normalizeEndpoint(urlInput.text)) }
+            return
+        }
         error = controller.addCustomProvider(nameInput.text, urlInput.text)
         if (error === "") { adding = false; close() }
     }
@@ -253,7 +263,7 @@ BaseDialog {
                             wrapMode: Text.Wrap
                         }
                         AppButton { text: "取消"; kind: "ghost"; onClicked: dlg.adding = false }
-                        AppButton { text: "保存并使用"; kind: "primary"; onClicked: dlg.save() }
+                        AppButton { text: dlg.forBackup ? "保存并选择" : "保存并使用"; kind: "primary"; onClicked: dlg.save() }
                     }
                 }
             }

@@ -152,3 +152,18 @@ test("the dashboard page holds no data and other paths are 404", async () => {
   assert.equal((await get(e, "/v1/report")).status, 405);
   assert.equal((await get(e, "/admin")).status, 404);
 });
+
+test("the password works with spaces around it and with any characters", async () => {
+  const withRaw = (token, header) => worker.fetch(new Request("https://t.example/api/summary", {
+    headers: { authorization: header } }), { DB: fakeD1(), ADMIN_TOKEN: token });
+  // a secret saved with a trailing newline / spaces still matches what is typed
+  assert.equal((await withRaw("a-long-admin-password\n", "Bearer a-long-admin-password")).status, 200);
+  assert.equal((await withRaw("a-long-admin-password", "Bearer u:" + encodeURIComponent("  a-long-admin-password "))).status, 200);
+  // Chinese (or any non-Latin-1) passwords: the page sends them percent-encoded
+  const zh = "学习通统计后台管理密码二〇二六";
+  assert.equal((await withRaw(zh, "Bearer u:" + encodeURIComponent(zh))).status, 200);
+  assert.equal((await withRaw(zh, "Bearer u:" + encodeURIComponent(zh + "x"))).status, 401);
+  assert.equal((await withRaw(zh, "Bearer u:%E0%A4%A")).status, 401);      // broken encoding
+  // still at least 12 characters
+  assert.equal((await withRaw("short-pass1", "Bearer short-pass1")).status, 401);
+});

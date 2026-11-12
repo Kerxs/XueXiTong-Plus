@@ -34,6 +34,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
@@ -51,6 +55,8 @@ import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,6 +92,8 @@ object SettingsModel {
     var schema: JSONObject = JSONObject()
         private set
     val values = mutableStateMapOf<String, String>()
+    /** 更多 AI 选项 unfolded (fields marked "more" in ui/advanced.py); folded each time the app starts. */
+    var moreOpen by mutableStateOf(false)
 
     suspend fun load(ctx: Context) = withContext(Dispatchers.IO) {
         val s = JSONObject(PythonBridge.settingsSchema(ctx))
@@ -200,7 +208,7 @@ fun BasicFields(ids: List<String>? = null) {
 @Composable
 private fun AnimatedField(f: JSONObject) {
     val m = X.motion
-    AnimatedVisibility(visible(f, SettingsModel.values),
+    AnimatedVisibility(visible(f, SettingsModel.values) && (!f.optBoolean("more") || SettingsModel.moreOpen),
         enter = fadeIn(tween(m.normal)) + expandVertically(tween(m.normal)),
         exit = fadeOut(tween(m.fast)) + shrinkVertically(tween(m.normal))) {
         FieldView(f)
@@ -277,6 +285,9 @@ fun FieldView(f: JSONObject) {
         "providers" -> ProvidersField(f)
         "aiprovider" -> AiProviderField(label)
         "modelpicker" -> ModelPicker()
+        "backupproviders" -> BackupProvidersField()
+        "more" -> MoreRow(label, hint)
+        "aitest" -> AiTestRow()
         else -> Unit  // display-only types the phone does not use
     }
 }
@@ -316,7 +327,9 @@ private fun ProvidersField(f: JSONObject) {
         Segmented(modes.map { it.optString("value") to it.optString("label") }, mode, { applyMode(it) }, Modifier.fillMaxWidth())
         modes.firstOrNull { it.optString("value") == mode }?.let { Hint(it.optString("hint")) }
         val shownKinds = when (mode) { "tiku" -> setOf("tiku"); "ai" -> setOf("ai"); "both" -> setOf("tiku", "ai"); else -> emptySet() }
-        options.filter { it.optString("kind") in shownKinds }.forEach { o ->
+        val choices = options.filter { it.optString("kind") in shownKinds && (!it.optBoolean("legacy") || it.optString("value") in picked) }
+        val aiOnly = mode == "ai" && choices.size == 1 && choices[0].optString("value") in picked
+        if (!aiOnly) choices.forEach { o ->
             val v = o.optString("value")
             val index = picked.indexOf(v)
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).clickable {
@@ -331,7 +344,7 @@ private fun ProvidersField(f: JSONObject) {
                 }
             }
         }
-        Hint(f.optString("hint"))
+        if (!aiOnly && mode != "none") Hint(f.optString("hint"))
     }
 }
 
@@ -393,7 +406,8 @@ private fun openLink(ctx: Context, url: String) {
 /** 选择服务商: full screen; first the categories, then the services of the chosen one. */
 @Composable
 private fun ProviderPicker(
-    endpoint: String, builtIn: List<JSONObject>, custom: List<Pair<String, String>>, saved: String, onClose: () -> Unit,
+    endpoint: String, builtIn: List<JSONObject>, custom: List<Pair<String, String>>, saved: String,
+    onPick: ((String) -> Unit)? = null, onClose: () -> Unit,
 ) {
     val ctx = LocalContext.current
     val c = X.colors
@@ -410,7 +424,8 @@ private fun ProviderPicker(
     var removing by remember { mutableStateOf<Service?>(null) }
 
     fun back() { if (category.isEmpty()) onClose() else category = "" }
-    fun pick(e: String) { values["tiku.endpoint"] = e; onClose() }
+    // onPick: 备用服务商 — the address goes to that dialog, the primary service stays as it is
+    fun pick(e: String) { if (onPick != null) onPick(e) else values["tiku.endpoint"] = e; onClose() }
 
     Dialog(onDismissRequest = { back() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.fillMaxSize().background(c.bg).padding(Dimens.pad).verticalScroll(rememberScrollState()),
@@ -508,7 +523,7 @@ private fun ProviderPicker(
                         values[CUSTOM_PROVIDERS] = withContext(Dispatchers.IO) {
                             PythonBridge.removeCustomProvider(ctx, saved, s.endpoint)
                         }
-                        if (endpoint == s.endpoint) values["tiku.endpoint"] = ""
+                        if (onPick == null && endpoint == s.endpoint) values["tiku.endpoint"] = ""
                         removing = null
                     }
                 }, kind = Kind.Danger)
@@ -552,25 +567,36 @@ private fun ModelPicker() {
     val values = SettingsModel.values
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
+    var hidden by remember { mutableStateOf(0) }
     val models = remember { mutableStateListOf<String>() }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        XButton(if (busy) "正在获取…" else "获取可用模型", {
-            busy = true; error = ""
-            scope.launch {
-                val result = withContext(Dispatchers.IO) {
-                    JSONObject(PythonBridge.listModels(ctx, values["tiku.endpoint"] ?: "", values["tiku.key"] ?: "", ""))
-                }
-                busy = false
-                if (result.optBoolean("ok")) {
-                    models.clear()
-                    val arr = result.optJSONArray("models") ?: JSONArray()
-                    for (i in 0 until arr.length()) models.add(arr.getString(i))
-                } else {
-                    error = result.optString("error")
-                }
+    val endpoint = values["tiku.endpoint"] ?: ""
+    val key = values["tiku.key"] ?: ""
+    fun fetch() {
+        busy = true; error = ""
+        scope.launch {
+            val result = withContext(Dispatchers.IO) { JSONObject(PythonBridge.listModels(ctx, endpoint, key, "")) }
+            busy = false
+            if (result.optBoolean("ok")) {
+                models.clear()
+                val arr = result.optJSONArray("models") ?: JSONArray()
+                for (i in 0 until arr.length()) models.add(arr.getString(i))
+                hidden = result.optInt("hidden")
+            } else {
+                error = result.optString("error")
             }
-        }, Modifier.fillMaxWidth(), enabled = !busy)
+        }
+    }
+    // No "获取" step to learn: the list comes by itself shortly after the service and key are there.
+    LaunchedEffect(endpoint, key) {
+        models.clear(); error = ""
+        if (endpoint.isNotBlank() && key.isNotBlank()) { kotlinx.coroutines.delay(900); fetch() }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        XButton(if (busy) "正在获取…" else if (models.isEmpty()) "获取可用模型" else "重新获取", { fetch() },
+            Modifier.fillMaxWidth(), enabled = !busy && endpoint.isNotBlank())
         if (error.isNotEmpty()) Text(error, color = c.danger, fontSize = 12.sp)
+        if (models.isNotEmpty()) Text("${models.size} 个能答题的模型，点一个即可使用" +
+            if (hidden > 0) "（已隐藏 $hidden 个向量、语音、绘图等模型）" else "", color = c.muted, fontSize = 12.sp)
         if (models.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             models.forEach { m ->
                 val selected = values["tiku.model"] == m
@@ -578,5 +604,242 @@ private fun ModelPicker() {
                     colors = chipColors(), border = chipBorder(selected))
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------- 备用服务商 (core/aiproviders.py)
+
+private const val BACKUPS = "tiku.backup_providers"
+private const val MAX_BACKUPS = 8
+
+private data class Backup(val endpoint: String, val key: String, val model: String)
+
+private fun backups(saved: String): List<Backup> = runCatching {
+    JSONArray(saved.ifBlank { "[]" }).objects()
+        .map { Backup(it.optString("endpoint").trim().trimEnd('/'), it.optString("key").trim(), it.optString("model").trim()) }
+        .filter { it.endpoint.isNotEmpty() }
+}.getOrDefault(emptyList())
+
+private fun storeBackups(list: List<Backup>) {
+    SettingsModel.values[BACKUPS] = if (list.isEmpty()) "" else JSONArray(list.take(MAX_BACKUPS).map {
+        JSONObject().put("endpoint", it.endpoint).put("key", it.key).put("model", it.model)
+    }).toString()
+}
+
+/** Same rules as core/aiproviders.problem with cloud_only (the phone only uses cloud services). */
+private fun backupProblem(b: Backup): String = when {
+    b.endpoint.isEmpty() -> "还没选择服务商"
+    !b.endpoint.startsWith("https://") -> "手机上只能使用 https 开头的云端服务"
+    b.model.isEmpty() -> "还没填写模型名称"
+    b.key.isEmpty() -> "还没填写 API Key"
+    else -> ""
+}
+
+/**
+ * 备用服务商: tried in order when the primary service fails (connection, timeout, wrong key, quota,
+ * server error). Each row moves up / down, becomes the primary (swapping with it), or is edited / removed.
+ */
+@Composable
+private fun BackupProvidersField() {
+    val c = X.colors
+    val values = SettingsModel.values
+    val list = backups(values[BACKUPS] ?: "")
+    val names = SettingsModel.schema.optJSONArray("aiProviders").objects().associate { it.optString("endpoint") to it.optString("name") } +
+        customProviders(values[CUSTOM_PROVIDERS] ?: "").associate { it.second to it.first }
+    var editing by remember { mutableStateOf<Int?>(null) }      // -1: adding
+
+    fun move(i: Int, d: Int) {
+        val l = list.toMutableList(); val j = i + d
+        if (j in l.indices) { val t = l[i]; l[i] = l[j]; l[j] = t; storeBackups(l) }
+    }
+    fun promote(i: Int) {
+        val chosen = list[i]
+        val old = Backup((values["tiku.endpoint"] ?: "").trim().trimEnd('/'), values["tiku.key"] ?: "", values["tiku.model"] ?: "")
+        val rest = list.toMutableList()
+        if (old.endpoint.isNotEmpty()) rest[i] = old else rest.removeAt(i)
+        values["tiku.endpoint"] = chosen.endpoint; values["tiku.key"] = chosen.key; values["tiku.model"] = chosen.model
+        storeBackups(rest)
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("备用服务商", color = c.text, fontSize = 14.sp)
+                Text("上面的服务商出错（连不上、超时、Key 无效、额度不足）时按顺序换下一个", color = c.muted, fontSize = 12.sp)
+            }
+            XButton("添加", { editing = -1 }, enabled = list.size < MAX_BACKUPS)
+        }
+        list.forEachIndexed { i, b ->
+            val problem = backupProblem(b)
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius))
+                .border(1.dp, if (problem.isEmpty()) c.border else c.warning, RoundedCornerShape(Dimens.radius))
+                .background(c.surface).padding(start = 12.dp, end = 2.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("${i + 2}", color = c.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clip(RoundedCornerShape(11.dp)).background(c.accentSoft).padding(horizontal = 7.dp, vertical = 2.dp))
+                Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                    // narrow screen: the service on the first line, the model (or what is missing) below
+                    Text(names[b.endpoint] ?: b.endpoint, color = c.text,
+                        fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(problem.ifEmpty { b.model }, color = if (problem.isEmpty()) c.muted else c.warning,
+                        fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                RowIcon(Icons.Filled.KeyboardArrowUp, "上移", i > 0) { move(i, -1) }
+                RowIcon(Icons.Filled.KeyboardArrowDown, "下移", i < list.lastIndex) { move(i, 1) }
+                RowIcon(Icons.Filled.Star, "设为首选") { promote(i) }
+                RowIcon(Icons.Filled.Edit, "编辑") { editing = i }
+                RowIcon(Icons.Filled.Delete, "删除") { storeBackups(list.filterIndexed { j, _ -> j != i }) }
+            }
+        }
+        if (list.isEmpty()) Text("还没有备用服务商：上面的服务商出错时，AI 答不了的题会随机作答或留空。", color = c.faint, fontSize = 12.sp)
+    }
+
+    editing?.let { i -> BackupEditor(i, list.getOrNull(i)) { editing = null } }
+}
+
+@Composable
+private fun RowIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    val c = X.colors
+    Box(Modifier.size(34.dp).clip(RoundedCornerShape(8.dp)).clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center) {
+        Icon(icon, label, tint = if (enabled) c.muted else c.faint.copy(alpha = 0.4f), modifier = Modifier.size(20.dp))
+    }
+}
+
+/** Add (index -1) or change one backup: service, API Key, model (typed or from the service's list). */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BackupEditor(index: Int, entry: Backup?, onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    val c = X.colors
+    val scope = rememberCoroutineScope()
+    val values = SettingsModel.values
+    var endpoint by remember { mutableStateOf(entry?.endpoint ?: "") }
+    var key by remember { mutableStateOf(entry?.key ?: "") }
+    var model by remember { mutableStateOf(entry?.model ?: "") }
+    var error by remember { mutableStateOf("") }
+    var picking by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    val models = remember { mutableStateListOf<String>() }
+    val saved = values[CUSTOM_PROVIDERS] ?: ""
+    val custom = remember(saved) { customProviders(saved) }
+    val builtIn = SettingsModel.schema.optJSONArray("aiProviders").objects()
+    val name = builtIn.firstOrNull { it.optString("endpoint") == endpoint }?.optString("name")
+        ?: custom.firstOrNull { it.second == endpoint }?.first ?: ""
+
+    AlertDialog(
+        onDismissRequest = onClose,
+        containerColor = c.surface, titleContentColor = c.text, textContentColor = c.text,
+        shape = RoundedCornerShape(Dimens.radiusLarge),
+        title = { Text(if (index < 0) "添加备用服务商" else "编辑备用服务商 ${index + 2}") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius))
+                    .border(1.dp, c.border, RoundedCornerShape(Dimens.radius)).background(c.surfaceAlt)
+                    .clickable { picking = true }.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(name.ifEmpty { if (endpoint.isEmpty()) "选择服务商" else "请重新选择" },
+                            color = if (name.isEmpty()) c.muted else c.text, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        if (endpoint.isNotEmpty()) Text(endpoint, color = c.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = c.faint)
+                }
+                OutlinedTextField(value = key, onValueChange = { key = it }, label = { Text("API Key") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(Dimens.radius), colors = fieldColors(),
+                    visualTransformation = PasswordVisualTransformation())
+                OutlinedTextField(value = model, onValueChange = { model = it }, label = { Text("模型名称") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(Dimens.radius), colors = fieldColors())
+                XButton(if (busy) "正在获取…" else "获取可用模型", {
+                    busy = true; error = ""
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) { JSONObject(PythonBridge.listModels(ctx, endpoint, key, "")) }
+                        busy = false
+                        if (result.optBoolean("ok")) {
+                            models.clear()
+                            val arr = result.optJSONArray("models") ?: JSONArray()
+                            for (j in 0 until arr.length()) models.add(arr.getString(j))
+                        } else error = result.optString("error")
+                    }
+                }, Modifier.fillMaxWidth(), enabled = !busy && endpoint.isNotEmpty())
+                if (models.isNotEmpty()) {
+                    val q = model.trim().lowercase()
+                    val shown = if (q.isEmpty() || model.trim() in models) models else models.filter { q in it.lowercase() }
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        shown.take(60).forEach { m ->
+                            FilterChip(selected = model == m, onClick = { model = m }, label = { Text(m) },
+                                colors = chipColors(), border = chipBorder(model == m))
+                        }
+                    }
+                }
+                if (error.isNotEmpty()) Text(error, color = c.warning, fontSize = 12.sp)
+            }
+        },
+        confirmButton = {
+            XButton("保存", {
+                val b = Backup(endpoint.trim().trimEnd('/'), key.trim(), model.trim())
+                error = backupProblem(b)
+                if (error.isEmpty()) {
+                    val list = backups(values[BACKUPS] ?: "").toMutableList()
+                    if (index in list.indices) list[index] = b else list.add(b)
+                    storeBackups(list)
+                    onClose()
+                }
+            }, kind = Kind.Primary)
+        },
+        dismissButton = { XButton("取消", onClose, kind = Kind.Ghost) },
+    )
+
+    if (picking) ProviderPicker(endpoint, builtIn, custom, saved, onPick = { e ->
+        if (e != endpoint) models.clear()
+        endpoint = e
+    }) { picking = false }
+}
+
+// ---------------------------------------------------------------- 更多 AI 选项 / 测试
+
+/** One row that unfolds the rarely needed AI settings (图片、合并提问、请求间隔 …). */
+@Composable
+private fun MoreRow(label: String, hint: String) {
+    val c = X.colors
+    val open = SettingsModel.moreOpen
+    val turn by androidx.compose.animation.core.animateFloatAsState(if (open) 180f else 0f, tween(X.motion.normal), label = "more")
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(Dimens.radius)).clickable { SettingsModel.moreOpen = !open }
+        .padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Filled.KeyboardArrowDown, null, tint = c.muted,
+            modifier = Modifier.size(20.dp).graphicsLayer { rotationZ = turn })
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, color = c.text, fontSize = 14.sp)
+            if (!open) Text("$hint，一般不用改", color = c.faint, fontSize = 12.sp)
+        }
+    }
+}
+
+/** 测试: asks the chosen model one tiny question, so a wrong key / model shows now, not during the run. */
+@Composable
+private fun AiTestRow() {
+    val ctx = LocalContext.current
+    val c = X.colors
+    val scope = rememberCoroutineScope()
+    val values = SettingsModel.values
+    val endpoint = values["tiku.endpoint"] ?: ""
+    val key = values["tiku.key"] ?: ""
+    val model = values["tiku.model"] ?: ""
+    var state by remember(endpoint, key, model) { mutableStateOf("idle") }
+    var message by remember(endpoint, key, model) { mutableStateOf("") }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        XButton(if (state == "running") "正在测试…" else "测试一下", {
+            state = "running"
+            scope.launch {
+                val started = System.currentTimeMillis()
+                val reason = withContext(Dispatchers.IO) { PythonBridge.testAi(ctx, endpoint, key, model) }
+                state = if (reason.isEmpty()) "ok" else "error"
+                message = reason.ifEmpty { "可以使用，%.1f 秒回答".format((System.currentTimeMillis() - started) / 1000.0) }
+            }
+        }, Modifier.fillMaxWidth(), kind = if (state == "ok") Kind.Secondary else Kind.Primary,
+            enabled = state != "running" && endpoint.isNotBlank() && model.isNotBlank())
+        Text(when (state) { "idle" -> "选好模型后点一下，确认 API Key 和模型都能用"; "ok" -> "✓ $message"; else -> message },
+            color = when (state) { "ok" -> c.success; "error" -> c.danger; else -> c.muted }, fontSize = 12.sp)
     }
 }

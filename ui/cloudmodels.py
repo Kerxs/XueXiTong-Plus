@@ -10,6 +10,7 @@ Services that are not in the list can be saved as 自定义服务商 (name + add
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
@@ -249,3 +250,60 @@ def list_models(endpoint: str, key: str, proxy: str = "", timeout: float = 15) -
     if not names:
         raise ModelListError("服务没有返回任何模型，请手动填写模型名称")
     return sorted(names, key=str.lower)
+
+
+# Models in a service's list that cannot answer questions: vectors, reranking, speech, pictures, video,
+# moderation. Hidden from the pick list (they can still be typed) — Issue #1: the list of 182 models
+# started with "qwen3.7-text-embedding".
+_NOT_CHAT = re.compile(
+    r"(embed|rerank|tts|asr|whisper|speech|audio|voice|transcri|moderation|dall-?e|image-gen|"
+    r"text-to-image|t2i|i2v|t2v|wanx|cogview|cogvideo|flux|stable-diffusion|sdxl|kolors|video-gen|"
+    r"^gpt-image|^sora|^veo|imagen|paraformer|cosyvoice|sambert|bge-|m3e|gte-)",
+    re.IGNORECASE)
+
+
+def chat_models(models: list[str]) -> tuple[list[str], int]:
+    """(the models that can answer questions, how many were left out)."""
+    keep = [m for m in models if not _NOT_CHAT.search(m)]
+    return keep, len(models) - len(keep)
+
+
+def test_chat(endpoint: str, key: str, model: str, proxy: str = "", timeout: float = 30) -> str:
+    """Ask the model one tiny question. "" when it answered, else why not (one sentence)."""
+    base = (endpoint or "").strip().rstrip("/")
+    if not base.lower().startswith(("http://", "https://")):
+        return "请先选择服务商"
+    if not str(model or "").strip():
+        return "请先选择或填写模型"
+    local = is_local(base)
+    if not str(key or "").strip() and not local:
+        return "请先填写 API Key"
+    body = json.dumps({"model": model.strip(), "max_tokens": 16,
+                       "messages": [{"role": "user", "content": "1+1=? 只回答数字"}]}).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "XueXiTong-Plus",
+               "Authorization": f"Bearer {(key or '').strip() or 'no-key'}"}
+    request = urllib.request.Request(base + "/chat/completions", data=body, headers=headers, method="POST")
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({})) if local else _opener(proxy)
+        with opener.open(request, timeout=timeout) as resp:  # noqa: S310 - address chosen by the user
+            data = json.loads(resp.read(1024 * 1024).decode("utf-8", errors="replace") or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            payload = json.loads(exc.read(64 * 1024).decode("utf-8", errors="replace") or "{}")
+            err = payload.get("error") if isinstance(payload, dict) else None
+            detail = str((err.get("message") if isinstance(err, dict) else err) or payload.get("message") or "")[:120]
+        except (ValueError, OSError, AttributeError):
+            pass
+        reason = {400: "请求被拒绝（400），模型名称可能不对", 401: "API Key 不正确或已失效（401）",
+                  402: "账户余额不足（402）", 403: "没有权限使用这个模型（403）",
+                  404: "找不到这个模型或接口（404），检查模型名称", 429: "请求太频繁或额度用完了（429）"}.get(
+            exc.code, f"服务出错（HTTP {exc.code}）")
+        return reason + (f"：{detail}" if detail else "")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return f"连不上 {base}：{getattr(exc, 'reason', exc)}"
+    except ValueError:
+        return "返回内容看不懂，检查服务商是否选对"
+    if not isinstance(data, dict) or not data.get("choices"):
+        return "服务没有返回回答，检查模型名称"
+    return ""

@@ -23,6 +23,21 @@ Item {
         spacing: Theme.gap
 
         // ---------- left: dashboard + basic parameters ----------
+        // When the window is too low for everything (a maximised window on a 200 % screen leaves
+        // about 900 px: Issue #1, the log was cut off below the window) the column scrolls instead
+        // of squeezing; when it fits, it fills the height exactly and nothing scrolls.
+        Flickable {
+            id: leftScroll
+            Layout.preferredWidth: Math.max(470, page.width * 0.44)
+            Layout.maximumWidth: 640
+            Layout.fillHeight: true
+            clip: true
+            contentWidth: width
+            contentHeight: leftCol.height
+            boundsBehavior: Flickable.StopAtBounds
+            interactive: contentHeight > height + 1
+            ScrollBar.vertical: ScrollBar { policy: leftScroll.interactive ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+
         ColumnLayout {
             id: leftCol
             // Log height: expanded it takes what the fixed parts leave (keeping 190 for tasks),
@@ -30,13 +45,14 @@ Item {
             // not window resizing.
             readonly property real fixedHeight: headerRow.height + accountBanner.height + tiles.height
                 + params.height + 4 * spacing
-            readonly property real logExpanded: Math.max(160, height - fixedHeight - 190 - spacing)
+            readonly property real logExpanded: Math.max(160, leftScroll.height - fixedHeight - 190 - spacing)
             readonly property real logCollapsed: 64
+            // the least the column needs: fixed parts, the task list's minimum and the log as it is now
+            readonly property real needed: fixedHeight + 120 + spacing + log.Layout.preferredHeight
             property real logOpen: log.expanded ? 1 : 0
             Behavior on logOpen { NumberAnimation { duration: Theme.slow; easing.type: Easing.InOutCubic } }
-            Layout.preferredWidth: Math.max(470, page.width * 0.44)
-            Layout.maximumWidth: 640
-            Layout.fillHeight: true
+            width: leftScroll.width - (leftScroll.interactive ? 10 : 0)       // room for the scroll bar
+            height: Math.max(leftScroll.height, needed)
             spacing: Theme.gap
 
             RowLayout {
@@ -177,6 +193,14 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: leftCol.logCollapsed + (leftCol.logExpanded - leftCol.logCollapsed) * leftCol.logOpen
                 appearDelay: 380
+                // opening the log on a low window: bring it into view
+                onExpandedChanged: if (expanded && leftScroll.interactive) revealLog.restart()
+            }
+        }
+            Timer {
+                id: revealLog
+                interval: Theme.slow + 20
+                onTriggered: leftScroll.contentY = Math.max(0, leftScroll.contentHeight - leftScroll.height)
             }
         }
 
