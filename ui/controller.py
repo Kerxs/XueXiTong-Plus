@@ -1140,7 +1140,19 @@ class AppController(QObject):
         self._log("INFO", "正在登录并识别课程…")
         process.start(str(program), arguments)
         self._course_process = process
-        QTimer.singleShot(90_000, lambda: process.kill() if process.state() != QProcess.ProcessState.NotRunning else None)
+        QTimer.singleShot(90_000, lambda: self._course_timeout(process))
+
+    def _course_timeout(self, process) -> None:
+        """识别课程 still running after 90 s: end it. Usually it finished long before and its QProcess is
+        gone (deleteLater): touching it then raised "Internal C++ object already deleted" — the crash
+        the statistics showed most (18 times in the first week of 1.3.x)."""
+        if self._course_process is not process:
+            return                       # finished (or a newer 识别课程 runs): nothing to end
+        try:
+            if process.state() != QProcess.ProcessState.NotRunning:
+                process.kill()
+        except RuntimeError:
+            pass
 
     def _on_courses_finished(self, process, buffer, decoder, code) -> None:
         import json

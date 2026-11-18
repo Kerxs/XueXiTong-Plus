@@ -703,21 +703,30 @@ class JobProcessor:
             waited += 1
         problem = self._relogin(force=True)
         if problem:
+            self._count_failed(task)
             self.failed_tasks.append(task)
             self._stop(task, problem)
             self._done(task)
             return
         self.retry_queue.put(task)
 
+    @staticmethod
+    def _count_failed(task: ChapterTask) -> None:
+        """The chapter is given up: what still failed in it counts as failed, once."""
+        for kind in task.point.get("_failed_kinds") or ():
+            telemetry.count(f"{kind}.fail")
+
     def _give_up_or_relogin(self, task: ChapterTask) -> None:
         """task failed max_tries times: log in again and retry it, or stop the run."""
         if task.relogged:
+            self._count_failed(task)
             self.failed_tasks.append(task)
             self._stop(task, "")
             self._done(task)
             return
         problem = self._relogin()
         if problem:
+            self._count_failed(task)
             self.failed_tasks.append(task)
             self._stop(task, problem)
             self._done(task)
@@ -806,6 +815,7 @@ class JobProcessor:
 
                 case _:
                     logger.error("任务 {} 的状态无效 {}", task.result, task.point["title"])
+                    self._count_failed(task)
                     self.failed_tasks.append(task)
                     self._done(task)
 
@@ -884,8 +894,15 @@ def process_chapter(chaoxing: Chaoxing, course: dict[str, Any], point: dict[str,
         job_results.append(result)
         if not _automated(job):
             telemetry.count("other.manual")
+        elif result.is_failure():
+            # one failed attempt; the chapter may still get it done on a retry. The failure itself is
+            # counted once, when the chapter is given up (JobProcessor._count_failed).
+            telemetry.count(f"{job.get('type')}.retry")
+            kinds = point.setdefault("_failed_kinds", [])
+            if job.get("type") not in kinds:
+                kinds.append(job.get("type"))
         else:
-            telemetry.count(f"{job.get('type')}.{'fail' if result.is_failure() else 'ok'}")
+            telemetry.count(f"{job.get('type')}.ok")
 
     for result in job_results:
         if result.is_failure():
